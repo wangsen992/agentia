@@ -8,24 +8,24 @@ Diagrams rendered with [Mermaid Live Editor](https://mermaid.live) or GitHub Mar
 
 ```mermaid
 graph TB
-    Mod["Moderator (InboxRelay)"]
-    subgraph Inbox["Shared Inbox Directory /tmp/inbox"]
+    Mod["Moderator"]
+    subgraph Inbox["Shared /tmp/inbox"]
         A_IN["analyst.jsonl"]
         B_IN["critic.jsonl"]
         Resp["responses/"]
     end
-    subgraph ContainerA["Container A: analyst"]
+    subgraph CA["Container A"]
         PA["Poller"]
     end
-    subgraph ContainerB["Container B: critic"]
+    subgraph CB["Container B"]
         PB["Poller"]
     end
-    Mod -->|"docker cp msg"| A_IN
-    Mod -->|"docker cp msg"| B_IN
-    PA -->|"read"| A_IN
-    PB -->|"read"| B_IN
-    PA -->|"write response"| Resp
-    PB -->|"write response"| Resp
+    Mod --> A_IN
+    Mod --> B_IN
+    PA --> A_IN
+    PB --> B_IN
+    PA --> Resp
+    PB --> Resp
 ```
 
 ---
@@ -112,23 +112,17 @@ sequenceDiagram
     participant A as Analyst Agent
     participant C as Critic Agent
 
-    M->>A: system: "You are the Analyst"
-    M->>C: system: "You are the Critic"
-    M->>A: intro: "Topic: Is AI helpful"
-    M->>C: intro: "Topic: Is AI helpful"
+    M->>A: system: You are the Analyst
+    M->>C: system: You are the Critic
+    M->>A: intro: Topic Is AI helpful
+    M->>C: intro: Topic Is AI helpful
 
-    Note over M,A,C: Turn 1 - Analyst speaks
-    M->>A: build_prompt(topic, history=empty)
-    A-->>M: "AI is helpful because..."
-
-    Note over M,A,C: Turn 2 - Critic responds
-    M->>C: build_prompt(topic, history=[Turn 1])
-    C-->>M: "However, AI has drawbacks..."
-
-    Note over M,A,C: Turn 3 - Analyst rebuts
-    M->>A: build_prompt(topic, history=[Turn 1, Turn 2])
-    A-->>M: "Valid points, but..."
-```
+    M->>A: build_prompt topic history=empty
+    A-->>M: AI is helpful because
+    M->>C: build_prompt topic history=Turn1
+    C-->>M: However AI has drawbacks
+    M->>A: build_prompt topic history=Turn1 Turn2
+    A-->>M: Valid points but
 
 ---
 
