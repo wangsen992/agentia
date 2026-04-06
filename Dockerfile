@@ -21,7 +21,7 @@ RUN pip3 install websockets --break-system-packages
 RUN npm install -g openclaw@latest
 
 # Create directory structure
-RUN mkdir -p /workspace /root/.openclaw/identity /root/.openclaw/agents/main/agent
+RUN mkdir -p /workspace /workspace/inbox /workspace/inbox/responses /root/.openclaw/identity /root/.openclaw/agents/main/agent
 
 # Copy harness scripts (control plane) → /workspace/runners/
 COPY harnesses/ /workspace/runners/
