@@ -28,17 +28,18 @@ COPY harnesses/ /workspace/runners/
 RUN chmod +x /workspace/runners/*.sh
 
 # Copy OpenClaw config (BUILD TIME — not a volume mount)
-COPY config/openclaw.json /root/.openclaw/openclaw.json
-COPY config/auth-profiles.json /root/.openclaw/agents/main/agent/auth-profiles.json
+COPY containers/config/openclaw.json /root/.openclaw/openclaw.json
+COPY containers/config/auth-profiles.json /root/.openclaw/agents/main/agent/auth-profiles.json
 
 WORKDIR /workspace
 
 # ─── Usage ────────────────────────────────────────────────────────────────────
 #
-#   docker run -it agentia                      # interactive REPL
-#   docker run -it agentia interactive         # same as above
-#   docker run agentia single "Hello world"    # single-shot
-#   docker run agentia multi --prompt "..."    # multi-turn automated
-#   docker run -d -p 18789:18789 agentia       # gateway-only (background)
+#   docker build -t agentia .                        # build from repo root
+#   docker run -it agentia                           # interactive REPL
+#   docker run -it agentia interactive              # same as above
+#   docker run agentia single "Hello world"         # single-shot
+#   docker run agentia multi --prompt "..."         # multi-turn automated
+#   docker run -d -p 18789:18789 agentia            # gateway-only (background)
 #
 ENTRYPOINT ["/workspace/runners/entrypoint.sh"]
