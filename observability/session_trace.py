@@ -39,26 +39,59 @@ def extract_subagent_ids(trace: list) -> List[Dict[str, Any]]:
     """
     Extract all subagent session IDs spawned via sessions_spawn tool calls.
 
-    Returns list of {"timestamp", "session_id", "agent_id", "message"} dicts.
+    Returns list of {"timestamp", "session_id", "agent_id", "task", "session_id_known"} dicts.
+
+    Note on session_id: OpenClaw assigns session IDs internally after sessions_spawn
+    returns. The UUID may appear in the thinking text (format: "agent:main:subagent:<uuid>")
+    but this is not guaranteed — thinking may be truncated or omit it. When the UUID
+    is not found in thinking, session_id is set to None and session_id_known=False.
     """
+    import re
     results = []
+    session_key_pattern = re.compile(
+        r"agent:[^:]+:subagent:([a-f0-9-]{36})", re.IGNORECASE
+    )
+
     for entry in trace:
         if entry.get("type") != "message":
             continue
         msg = entry.get("message", {})
         if msg.get("role") != "assistant":
             continue
+
         for block in msg.get("content", []):
-            if block.get("type") == "toolCall":
-                name = block.get("name", "")
-                if name == "sessions_spawn":
-                    raw_args = block.get("rawArgs", {})
-                    results.append({
-                        "timestamp": entry.get("timestamp"),
-                        "session_id": raw_args.get("sessionId", ""),
-                        "agent_id": raw_args.get("agentId", ""),
-                        "message": raw_args.get("message", "")[:200],
-                    })
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "toolCall":
+                continue
+            name = block.get("name", "")
+            if name != "sessions_spawn":
+                continue
+
+            args = block.get("arguments", {})
+
+            # Try to extract session UUID from thinking text of the same message
+            session_id = None
+            session_id_known = False
+            for b2 in msg.get("content", []):
+                if not isinstance(b2, dict):
+                    continue
+                if b2.get("type") != "thinking":
+                    continue
+                thinking_text = b2.get("thinking", "")
+                match = session_key_pattern.search(thinking_text)
+                if match:
+                    session_id = match.group(1)
+                    session_id_known = True
+                    break
+
+            results.append({
+                "timestamp": entry.get("timestamp"),
+                "session_id": session_id,
+                "session_id_known": session_id_known,
+                "agent_id": args.get("agentId", ""),
+                "task": args.get("task", "")[:200],
+            })
     return results
 
 
