@@ -10,13 +10,17 @@ Pattern:
 Key insight: Harness just sends "Continue" repeatedly. Agent handles everything.
 """
 
-import subprocess
+import sys
 import json
 import time
 import uuid
 import os
 from pathlib import Path
 from typing import Optional
+
+# Agent adapter — switch runtime by changing get_adapter("openclaw") → get_adapter("pi"), etc.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.adapters import get_adapter
 
 
 SESSION_DIR = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
@@ -65,25 +69,9 @@ def had_subagents(trace: list) -> bool:
     return False
 
 
-def send_turn(session_id: str, message: str, workspace: Optional[str] = None) -> dict:
-    """Send a turn to the agent via openclaw agent."""
-    cmd = [
-        "openclaw", "agent",
-        "--session-id", session_id,
-        "--message", message
-    ]
-
-    env = os.environ.copy()
-    if workspace:
-        env["OPENCLAW_WORKSPACE"] = workspace
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=120
-    )
+def send_turn(adapter, message: str) -> dict:
+    """Send a turn to the agent via the adapter."""
+    result = adapter.send(message)
 
     return {
         "stdout": result.stdout,
@@ -95,10 +83,10 @@ def send_turn(session_id: str, message: str, workspace: Optional[str] = None) ->
 class MultiTurnHarness:
     """
     Multi-turn harness using openclaw agent.
-    
+
     The agent stays alive across turns via persistent session.
     Harness sends "Continue" until agent signals done.
-    
+
     Flow:
     1. Send initial task with subagent delegation
     2. Agent spawns subagents, returns
@@ -116,21 +104,23 @@ class MultiTurnHarness:
     def run(self, prompt: str, wait_seconds: float = 15.0) -> dict:
         """
         Run multi-turn delegation workflow.
-        
+
         Args:
             prompt: Initial task prompt
             wait_seconds: Time to wait between turns for subagent completion
-            
+
         Returns:
             dict with: session_id, turns (list of responses), final_answer
         """
-        session_id = f"multi-{uuid.uuid4().hex[:8]}"
+        # Create agent adapter (swap "openclaw" → "pi" to use different runtime)
+        self._adapter = get_adapter("openclaw", workspace=self.workspace)
+        session_id = self._adapter.start()
 
         # ── Turn 1 ───────────────────────────────────────────────────────────
         print(f"[Turn 1] Sending initial prompt...")
-        result1 = send_turn(session_id, prompt, self.workspace)
+        result1 = send_turn(self._adapter, prompt)
         trace1 = get_session_trace(session_id)
-        
+
         self.turns.append({"turn": 1, "response": result1, "trace": trace1})
         self.traces = trace1
 
@@ -138,30 +128,30 @@ class MultiTurnHarness:
 
         # ── Multi-Turn Loop ─────────────────────────────────────────────────
         turn_num = 1
-        
+
         while turn_num < self.max_turns:
             # Check if last turn had subagents
             if not had_subagents(self.traces):
                 # No subagents in last turn → agent is done
                 print(f"[Turn {turn_num}] No subagents spawned → Final answer")
                 break
-            
+
             # Wait for subagent completion
             print(f"[Turn {turn_num}] Subagents spawned, waiting {wait_seconds}s...")
             time.sleep(wait_seconds)
-            
+
             # Get trace BEFORE next turn to detect subagents
             prev_trace = self.traces
-            
+
             # Send Continue
             turn_num += 1
             print(f"[Turn {turn_num}] Continue...")
-            result = send_turn(session_id, "Continue where you left off", self.workspace)
+            result = send_turn(self._adapter, "Continue where you left off")
             trace = get_session_trace(session_id)
-            
+
             self.turns.append({"turn": turn_num, "response": result, "trace": trace})
             self.traces = trace
-            
+
             print(f"[Turn {turn_num}] Response: {result['stdout'][:200].strip()}")
 
         # ── Build Final Answer ───────────────────────────────────────────────

@@ -6,11 +6,19 @@ Usage:
     python3 /workspace/runners/single_harness.py "Your prompt here"
 
 Sends one prompt, prints the response, exits.
+
+To switch agent runtime:
+    RUNTIME=pi python3 single_harness.py "Your prompt here"
 """
 
-import subprocess
+import os
 import sys
 import uuid
+from pathlib import Path
+
+# Agent adapter
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.adapters import get_adapter, AgentResponse
 
 
 def main():
@@ -19,28 +27,20 @@ def main():
         sys.exit(1)
 
     prompt = " ".join(sys.argv[1:])
-    session_id = f"single-{uuid.uuid4().hex[:8]}"
+    runtime = os.environ.get("RUNTIME", "openclaw")
 
-    print(f"[Session {session_id}] Sending prompt...", file=sys.stderr)
+    print(f"[Runtime: {runtime}] Sending prompt...", file=sys.stderr)
 
-    result = subprocess.run(
-        [
-            "openclaw", "agent",
-            "--session-id", session_id,
-            "--message", prompt
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120
-    )
+    adapter = get_adapter(runtime)
+    adapter.start(f"single-{uuid.uuid4().hex[:8]}")
+    response = adapter.send(prompt)
 
-    if result.stderr:
-        # Filter out verbose gateway logs, keep errors
-        for line in result.stderr.splitlines():
+    if response.stderr:
+        for line in response.stderr.splitlines():
             if any(k in line.lower() for k in ["error", "warn"]):
                 print(line, file=sys.stderr)
 
-    print(result.stdout)
+    print(response.stdout)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,9 @@ RUN mkdir -p /workspace /root/.openclaw/identity /root/.openclaw/agents/main/age
 COPY harnesses/ /workspace/runners/
 RUN chmod +x /workspace/runners/*.sh
 
+# Copy agent adapter layer
+COPY agents/ /workspace/agents/
+
 # Copy OpenClaw config (BUILD TIME — not a volume mount)
 COPY containers/config/openclaw.json /root/.openclaw/openclaw.json
 COPY containers/config/auth-profiles.json /root/.openclaw/agents/main/agent/auth-profiles.json
