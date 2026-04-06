@@ -13,6 +13,8 @@ All events for a session (including subagent traces) are written to one file: `l
 - Simpler implementation, no file lifecycle coordination
 - Subagent traces are fetched on-demand from the running agent, not written independently
 
+**Limitation:** Subagent `session_id` is not always recoverable from the session trace. OpenClaw assigns session IDs internally after `sessions_spawn` returns. The UUID may appear in the thinking text as `agent:main:subagent:<uuid>` but this is not guaranteed — thinking may be truncated or omit it. When not found, `session_id=None` and `session_id_known=False` are logged.
+
 **Future consideration (not implemented):**
 Per-subagent log files could be added later if:
 - Subagent sessions run independently and long-lived
