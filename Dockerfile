@@ -36,6 +36,13 @@ COPY observability/ /workspace/observability/
 # Copy relay layer
 COPY relay/ /workspace/relay/
 
+# Copy provision tool and adapters
+COPY provision.py /workspace/provision.py
+COPY adapters/ /workspace/adapters/
+
+# Copy workspace templates (for provision tool)
+COPY workspaces/ /workspace/workspaces/
+
 # Copy OpenClaw config (BUILD TIME — not a volume mount)
 COPY containers/config/openclaw.json /root/.openclaw/openclaw.json
 COPY containers/config/auth-profiles.json /root/.openclaw/agents/main/agent/auth-profiles.json

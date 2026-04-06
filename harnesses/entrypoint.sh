@@ -28,6 +28,9 @@
 
 set -e
 
+# Workspace — set once, inherited by all harnesses and openclaw agent subprocesses
+export OPENCLAW_WORKSPACE=/workspace
+
 WORKSPACE_DIR="/workspace"
 RUNNERS_DIR="${WORKSPACE_DIR}/runners"
 
