@@ -5,12 +5,11 @@ IPC Harness — two-turn relay pattern.
 Built on AgentAdapter — decoupled from OpenClaw specifics.
 Session trace read via adapter.get_session_trace().
 
-Pattern:
-- Turn 1: Agent spawns subagents, exits naturally
-- Optional Turn 2: If subagents were spawned, agent reads results and synthesizes
+LOG=1 to enable structured logging to /workspace/logs/session_<SESSION_ID>.jsonl.
 """
 
 import json
+import os
 import sys
 import time
 import uuid
@@ -19,6 +18,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.adapters import get_adapter
+from observability import SessionLogger
 
 
 def had_subagents(trace: list) -> bool:
@@ -66,8 +66,8 @@ class IPCHarness:
         self.workspace = workspace
         self.wait_seconds = wait_seconds
 
-    def run(self, prompt: str, expected_files: Optional[list] = None) -> dict:
-        self._adapter = get_adapter(workspace=self.workspace)
+    def run(self, prompt: str, expected_files: Optional[list] = None, logger=None) -> dict:
+        self._adapter = get_adapter(workspace=self.workspace, logger=logger)
         self._adapter.setup()
         session_id = self._adapter.start()
 
@@ -84,6 +84,9 @@ class IPCHarness:
             "turn2": None,
             "trace": trace1
         }
+
+        if logger:
+            logger.log_subagent_check(had_subagents=needs_turn2, trace_length=len(trace1))
 
         if not needs_turn2:
             self._adapter.stop()
@@ -115,10 +118,23 @@ if __name__ == "__main__":
     parser.add_argument("--workspace", help="Workspace directory")
     parser.add_argument("--wait", type=float, default=30.0, help="Wait seconds before Turn 2")
     parser.add_argument("--files", nargs="*", help="Expected files to poll before Turn 2")
+    parser.add_argument("--log", action="store_true", help="Enable structured logging")
 
     args = parser.parse_args()
 
+    harness_logger = None
+    if args.log:
+        harness_logger = SessionLogger(
+            "openclaw",
+            session_id=f"ipc-{uuid.uuid4().hex[:8]}"
+        )
+        harness_logger.__enter__()
+        print(f"[Logging to {harness_logger.path}]", file=sys.stderr)
+
     harness = IPCHarness(workspace=args.workspace, wait_seconds=args.wait)
-    result = harness.run(args.prompt, expected_files=args.files)
+    result = harness.run(args.prompt, expected_files=args.files, logger=harness_logger)
 
     print(json.dumps(result, indent=2, default=str))
+
+    if harness_logger:
+        harness_logger.__exit__(None, None, None)

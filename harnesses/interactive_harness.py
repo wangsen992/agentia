@@ -8,32 +8,42 @@ Usage:
 Each line from stdin is sent as a turn to the agent via a persistent session.
 Responses are printed to stdout.
 
-Uses OpenClawAdapter — calls setup() to provision gateway,
-then runs the interactive REPL, then teardown() on exit.
 Fully decoupled — uses AgentAdapter interface only.
+Session trace logged to /workspace/logs/session_<SESSION_ID>.jsonl if LOG=1.
 """
 
+import os
 import sys
 import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.adapters import get_adapter
+from observability import SessionLogger
 
 
 def main():
     session_id = f"itxn-{uuid.uuid4().hex[:8]}"
+    do_log = os.environ.get("LOG", "0") == "1"
+
+    harness_logger = None
+    if do_log:
+        harness_logger = SessionLogger("openclaw", session_id=session_id)
+        harness_logger.__enter__()
+        print(f"[Logging to {harness_logger.path}]", flush=True)
+
     print(f"=== Interactive Session ===", flush=True)
     print(f"Session ID: {session_id}", flush=True)
     print(f"Setting up adapter...", flush=True)
 
-    adapter = get_adapter()
+    adapter = get_adapter(logger=harness_logger)
     adapter.setup()
     adapter.start(session_id)
 
     print(f"Ready. Type a message and press Enter. Ctrl+C to exit.", flush=True)
     print(f"---", flush=True)
 
+    turn = 0
     try:
         while True:
             message = input("[You] ")
@@ -41,6 +51,7 @@ def main():
                 print()
                 continue
 
+            turn += 1
             result = adapter.send(message)
 
             if result.stderr and "error" in result.stderr.lower():
@@ -58,6 +69,8 @@ def main():
     finally:
         adapter.stop()
         adapter.teardown()
+        if harness_logger:
+            harness_logger.__exit__(None, None, None)
 
 
 if __name__ == "__main__":
