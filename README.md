@@ -2,82 +2,80 @@
 
 **Mission:** Build a living, evolving organization of AI agents that communicate asynchronously, maintain hierarchical structure, and can self-manage through dynamic spawn and prune operations.
 
-> Agentia serves as the **foundational infrastructure layer** for multi-agent experimentation. It owns the container provisioning, relay communication, and organizational management. Downstream projects (like `agent-exp`) use agentia as their agent runtime.
-
-## Relationship to Other Projects
-
-```
-agentia (this repo)
-├── Infrastructure: container provisioning, relay, observability
-└── Owns: containers/, relay/, observability/, org/
-
-agent-exp (downstream)
-├── Policy research: delegation triggers, AGENTS.md variants
-├── Experiment fixtures: corpus, eval logic, launch scripts
-└── Uses: agentia's containers and relay infrastructure
-```
-
 ## Architecture Layers
 
 ```
 Layer 1: Container Infrastructure
-├── Dockerfile (unified, all-in-one image)
-├── start_agents.py (orchestrates multi-container deployment)
-├── gateway-startup.py (gateway config + auto-pairing)
-└── entrypoint.sh (harness modes: interactive/multi/single/gateway)
+├── containers/
+│   ├── Dockerfile              ← unified image, all harness modes
+│   ├── config/                 ← openclaw.json, auth-profiles.json (build-time)
+│   ├── startup/                ← gateway-startup.py, entrypoint.sh
+│   └── start_agents.py          ← multi-container orchestration
 
 Layer 2: Async Relay & Communication
-├── Inbox per agent (SQLite, persistent, sequential)
-├── Message routing (sender → target inbox)
-├── Correlation IDs (trace multi-agent conversations)
-├── State tracking (idle/busy/timeout/dead per agent)
-└── Relay API (programmatic control for external harnesses)
+├── relay/
+│   ├── relay_core.py            ← base WebSocket relay
+│   ├── exec_relay.py            ← docker exec path (reference impl)
+│   └── moderator.py             ← debate-style multi-agent relay
+└── (future: inbox.py, router.py, registry.py, state.py)
 
-Layer 3: Observability
-├── Message audit log (timestamp, from, to, content preview, correlation_id)
-├── Agent state log (state transitions with timestamps)
-├── Turn trace log (prompt/response per turn, linkable via correlation_id)
-└── Decision log (org manager spawn/prune decisions with rationale)
+Layer 3: Observability (first-class from day 1)
+├── observability/
+│   ├── logger.py               ← structured logging
+│   ├── trace.py                 ← message traces
+│   └── metrics.py               ← agent performance metrics
 
-Layer 4: Organization & Hierarchy
-├── Registry (agent capabilities, locations, state)
-├── Capability map (routing by function, not name)
-├── Task queue with priority
-└── Hierarchy: org manager → orchestrator → specialists
+Layer 4: Harnesses (control plane)
+├── harnesses/
+│   ├── gateway_harness.py
+│   ├── interactive_harness.py
+│   ├── multi_turn_harness.py
+│   ├── single_harness.py
+│   ├── ipc_harness.py
+│   └── examples/
+│       └── debate_example.py
 
-Layer 5: Evolution (Intelligence)
-├── Performance metrics per agent type
-├── Org manager: spawn/prune decisions based on metrics
-├── Genetic inheritance (new agents inherit + vary from parents)
-└── Fitness function (how does the org evaluate itself?)
+Layer 5: Organization & Evolution (Phase 2+)
+├── org/                        ← org manager, fitness, evolution
 ```
+
+## Design Principles
+
+1. **Relay is pure infrastructure** — message routing + state tracking, nothing else
+2. **Harnesses are thin** — data-driven control plane, not hardcoded scripts
+3. **Observability first** — logging and tracing ship from day 1
+4. **Structure emerges** — directories added when data exists to fill them, not before
 
 ## Directory Structure
 
 ```
 agentia/
-├── containers/           ← Docker image definition + startup scripts
-│   ├── Dockerfile
-│   ├── openclaw.json    (copied at build time)
-│   ├── auth-profiles.json
-│   └── runners/
-│       ├── entrypoint.sh
-│       ├── gateway-startup.py
-│       └── start_agents.py
-├── relay/               ← async relay implementation
-│   ├── relay.py         (WebSocket relay, thread-safe)
-│   ├── exec_relay.py    (docker exec path, reference impl)
-│   └── inbox_relay.py   (async inbox-based relay, under development)
-├── observability/        ← logging and instrumentation
-├── org/                 ← org manager and hierarchy
-├── specs/               ← design decisions with rationale
-├── logs/                ← runtime logs (gitignored)
-└── src/                 ← core library
+├── containers/        ← Docker image + startup
+├── relay/            ← async relay (core infra)
+├── harnesses/        ← control plane (fresh design)
+├── observability/    ← instrumentation
+├── org/              ← org manager + evolution (Phase 2+)
+├── specs/            ← design decisions with rationale
+├── logs/             ← runtime logs (gitignored)
+└── src/              ← core library
+```
+
+## Relationship to agent-exp
+
+```
+agentia (this repo)
+├── Owns: container provisioning, relay, observability, harnesses
+└── Mission: federated org system + async communication
+
+agent-exp (downstream)
+├── Policy research: delegation triggers, AGENTS.md variants
+├── Experiment fixtures: corpus, eval logic
+└── Uses: agentia's containers and relay infrastructure
 ```
 
 ## Current Status
 
-Phase 0 — Infrastructure setup. Observability first, async inbox next.
+Phase 0 — Infrastructure. Observability first, relay next.
 
 ## Key Questions (Open)
 
@@ -89,8 +87,9 @@ Phase 0 — Infrastructure setup. Observability first, async inbox next.
 
 ## References
 
-- Downstream: [agent-exp](https://github.com/wangsen992/agent-exp) — policy research using agentia's infrastructure
-- Inspired by: Federated Agentic Workflows, A2A protocol research, multi-agent LLMs (2025-2026)
+- Downstream: [agent-exp](https://github.com/wangsen992/agent-exp)
+- A2A Protocol studied but not adopted (enterprise middleware, not core infra)
+- Inspired by: multi-agent LLMs (Anthropic 2025), AutoGen Core, Agentic workflows
 
 ## License
 
