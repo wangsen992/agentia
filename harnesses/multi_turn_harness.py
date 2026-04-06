@@ -78,6 +78,15 @@ class MultiTurnHarness:
             self.turns.append({"turn": 1, "response": result1, "trace": trace1})
             traces = trace1
 
+            if logger:
+                from observability.session_trace import extract_subagent_ids
+                subagent_ids = extract_subagent_ids(trace1)
+                if subagent_ids:
+                    print(f"[Turn 1] Detected {len(subagent_ids)} subagent(s), capturing traces...")
+                    for sa in subagent_ids:
+                        print(f"  → subagent: {sa['session_id']}")
+                    logger.capture_subagent_traces(trace1, self._adapter.get_session_trace)
+
             print(f"[Turn 1] Response: {result1['stdout'][:200].strip()}")
 
             # ── Multi-Turn Loop ─────────────────────────────────────────────────
@@ -98,6 +107,15 @@ class MultiTurnHarness:
 
                 self.turns.append({"turn": turn_num, "response": result, "trace": trace})
                 traces = trace
+
+                if logger:
+                    from observability.session_trace import extract_subagent_ids
+                    subagent_ids = extract_subagent_ids(trace)
+                    if subagent_ids:
+                        print(f"[Turn {turn_num}] Detected {len(subagent_ids)} subagent(s), capturing traces...")
+                        for sa in subagent_ids:
+                            print(f"  → subagent: {sa['session_id']}")
+                        logger.capture_subagent_traces(trace, self._adapter.get_session_trace)
 
                 print(f"[Turn {turn_num}] Response: {result['stdout'][:200].strip()}")
 

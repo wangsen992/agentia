@@ -214,10 +214,12 @@ class OpenClawAdapter(AgentAdapter):
 
         if self._logger:
             duration_ms = (time.perf_counter() - send_start) * 1000
+            trace = self.get_session_trace()
             self._logger.log_send(
                 prompt=message,
                 response=response,
                 duration_ms=duration_ms,
+                trace=trace,
             )
             self._logger.lifecycle_end("send")
 
