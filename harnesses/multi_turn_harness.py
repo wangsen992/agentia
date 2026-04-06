@@ -22,6 +22,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.adapters import get_adapter
+from observability import SessionLogger
 
 
 def had_subagents(trace: list) -> bool:
@@ -63,8 +64,8 @@ class MultiTurnHarness:
         self.max_turns = max_turns
         self.turns = []
 
-    def run(self, prompt: str, wait_seconds: float = 15.0) -> dict:
-        self._adapter = get_adapter(workspace=self.workspace)
+    def run(self, prompt: str, wait_seconds: float = 15.0, logger=None) -> dict:
+        self._adapter = get_adapter(workspace=self.workspace, logger=logger)
         self._adapter.setup()
         session_id = self._adapter.start()
 
@@ -126,11 +127,26 @@ if __name__ == "__main__":
     parser.add_argument("--workspace", help="Workspace directory")
     parser.add_argument("--wait", type=float, default=15.0, help="Wait seconds between turns")
     parser.add_argument("--max-turns", type=int, default=10, help="Max turns")
+    parser.add_argument("--log", action="store_true", help="Enable structured logging to logs/")
 
     args = parser.parse_args()
 
+    harness_logger = None
+    if args.log:
+        import uuid
+        harness_logger = SessionLogger(
+            "openclaw",
+            session_id=f"multi-{uuid.uuid4().hex[:8]}"
+        )
+        harness_logger.__enter__()
+        print(f"[Logging enabled: {harness_logger.path}]", file=sys.stderr)
+
     harness = MultiTurnHarness(workspace=args.workspace, max_turns=args.max_turns)
-    result = harness.run(args.prompt, wait_seconds=args.wait)
+    result = harness.run(args.prompt, wait_seconds=args.wait, logger=harness_logger)
+
+    if harness_logger:
+        harness_logger.__exit__(None, None, None)
+        print(f"[Log: {harness_logger.path}]", file=sys.stderr)
 
     print("\n" + "="*60)
     print("FINAL RESULT")

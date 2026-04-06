@@ -40,17 +40,27 @@ class OpenClawAdapter(AgentAdapter):
     Args:
         workspace: OPENCLAW_WORKSPACE env var for the agent
         timeout: seconds before subprocess times out (default 120)
+        logger: Optional SessionLogger for observability. If None, logs only to stderr.
     """
 
-    def __init__(self, workspace: Optional[str] = None, timeout: int = 120):
+    def __init__(
+        self,
+        workspace: Optional[str] = None,
+        timeout: int = 120,
+        logger: Optional[object] = None,
+    ):
         self._workspace = workspace
         self._timeout = timeout
         self._gateway_proc = None
+        self._logger = logger
 
     # ─── Lifecycle ─────────────────────────────────────────────────────────────
 
     def setup(self) -> None:
         """Provision identity, patch config, start gateway, approve pairings."""
+        if self._logger:
+            self._logger.lifecycle_start("setup")
+
         cfg_path = "/root/.openclaw/openclaw.json"
 
         # Patch config: lan bind + token auth
@@ -78,11 +88,17 @@ class OpenClawAdapter(AgentAdapter):
         )
         print(f"[OpenClawAdapter] Gateway started (PID {self._gateway_proc.pid})")
 
+        if self._logger:
+            self._logger.log("gateway_start", gateway_pid=self._gateway_proc.pid, port=GATEWAY_PORT)
+
         # Wait for gateway to be ready
         self._wait_gateway_ready()
 
         # Approve any pending pairings
         self._approve_pairings()
+
+        if self._logger:
+            self._logger.lifecycle_end("setup")
 
     def _wait_gateway_ready(self, timeout: int = 30) -> bool:
         """Poll gateway until it responds with 200."""
@@ -95,10 +111,14 @@ class OpenClawAdapter(AgentAdapter):
             )
             if r.stdout.strip() == "200":
                 print(f"[OpenClawAdapter] Gateway ready after {i+1}s")
+                if self._logger:
+                    self._logger.log("gateway_ready", wait_seconds=i+1)
                 return True
             if i >= 5:
                 print(f"[OpenClawAdapter] Waiting... ({i+1}s)", flush=True)
         print("[OpenClawAdapter] Gateway failed to start")
+        if self._logger:
+            self._logger.log("gateway_failed")
         self._gateway_proc.kill()
         return False
 
@@ -121,20 +141,34 @@ class OpenClawAdapter(AgentAdapter):
                                 capture_output=True
                             )
                             print(f"[OpenClawAdapter] Auto-approved: {req_id[:20]}...")
+                            if self._logger:
+                                self._logger.log("pairing_approved", req_id=req_id[:20])
                 else:
                     print("[OpenClawAdapter] No pending pairings")
+                    if self._logger:
+                        self._logger.log("pairing_none")
             except (json.JSONDecodeError, KeyError) as e:
                 print(f"[OpenClawAdapter] Pairing list parse error: {e}")
+                if self._logger:
+                    self._logger.log("pairing_error", error=str(e))
         else:
             print(f"[OpenClawAdapter] Could not list pairings: {r.stderr[:100]}")
+            if self._logger:
+                self._logger.log("pairing_list_failed", stderr=r.stderr[:200])
 
     def teardown(self) -> None:
         """Kill the gateway process."""
+        if self._logger:
+            self._logger.lifecycle_start("teardown")
         if self._gateway_proc:
             print(f"[OpenClawAdapter] Killing gateway (PID {self._gateway_proc.pid})")
             self._gateway_proc.kill()
             self._gateway_proc.wait()
+            if self._logger:
+                self._logger.log("gateway_stop", gateway_pid=self._gateway_proc.pid)
             self._gateway_proc = None
+        if self._logger:
+            self._logger.lifecycle_end("teardown")
 
     # ─── Agent Loop ─────────────────────────────────────────────────────────────
 
@@ -142,11 +176,17 @@ class OpenClawAdapter(AgentAdapter):
         if session_id is None:
             session_id = f"agent-{uuid.uuid4().hex[:8]}"
         self.session_id = session_id
+        if self._logger:
+            self._logger.log("session_start", session_id=session_id)
         return self.session_id
 
     def send(self, message: str) -> AgentResponse:
         if self.session_id is None:
             self.start()
+
+        if self._logger:
+            self._logger.lifecycle_start("send")
+            send_start = time.perf_counter()
 
         cmd = [
             "openclaw", "agent",
@@ -166,14 +206,27 @@ class OpenClawAdapter(AgentAdapter):
             env=env
         )
 
-        return AgentResponse(
+        response = AgentResponse(
             stdout=result.stdout,
             stderr=result.stderr,
             returncode=result.returncode
         )
 
+        if self._logger:
+            duration_ms = (time.perf_counter() - send_start) * 1000
+            self._logger.log_send(
+                prompt=message,
+                response=response,
+                duration_ms=duration_ms,
+            )
+            self._logger.lifecycle_end("send")
+
+        return response
+
     def stop(self) -> None:
         """Stop is a no-op for subprocess-based adapter (process exits after send)."""
+        if self._logger:
+            self._logger.log("session_stop")
         self.session_id = None
 
     def is_running(self) -> bool:
@@ -186,7 +239,7 @@ class OpenClawAdapter(AgentAdapter):
 
         Returns list of trace entries from OpenClaw's session JSONL file.
         """
-        import json
+        import json as _json
         from pathlib import Path
 
         sid = session_id or self.session_id
@@ -212,7 +265,7 @@ class OpenClawAdapter(AgentAdapter):
                 line = line.strip()
                 if line:
                     try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
+                        entries.append(_json.loads(line))
+                    except _json.JSONDecodeError:
                         pass
         return entries

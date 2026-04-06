@@ -30,6 +30,9 @@ RUN chmod +x /workspace/runners/*.sh
 # Copy agent adapter layer
 COPY agents/ /workspace/agents/
 
+# Copy observability layer
+COPY observability/ /workspace/observability/
+
 # Copy OpenClaw config (BUILD TIME — not a volume mount)
 COPY containers/config/openclaw.json /root/.openclaw/openclaw.json
 COPY containers/config/auth-profiles.json /root/.openclaw/agents/main/agent/auth-profiles.json
