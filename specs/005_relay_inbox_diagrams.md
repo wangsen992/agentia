@@ -2,7 +2,7 @@
 
 Diagrams rendered with [Mermaid Live Editor](https://mermaid.live) or GitHub Markdown.
 
----
+***
 
 ## 1. System Architecture
 
@@ -28,7 +28,7 @@ graph TB
     PB --> Resp
 ```
 
----
+***
 
 ## 2. send() — Request/Response Flow
 
@@ -55,7 +55,7 @@ sequenceDiagram
     IR-->>M: "2 + 2 = 4"
 ```
 
----
+***
 
 ## 3. send_async() — Fire-and-Forget Flow
 
@@ -79,7 +79,7 @@ sequenceDiagram
     Note over M,P: No response expected or waited for
 ```
 
----
+***
 
 ## 4. Broadcast — One-to-Many
 
@@ -102,7 +102,7 @@ sequenceDiagram
     End
 ```
 
----
+***
 
 ## 5. Multi-Agent Conversation (Moderator Orchestration)
 
@@ -124,7 +124,7 @@ sequenceDiagram
     M->>A: build_prompt topic history=Turn1 Turn2
     A-->>M: Valid points but
 
----
+Diagram 6: Poller Internal Flow
 
 ## 6. Poller Internal Flow
 
