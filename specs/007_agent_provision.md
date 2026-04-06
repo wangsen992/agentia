@@ -1,198 +1,262 @@
-# Agent Provision Tool — SPEC 007.2
+# Agentia Agent Registry and Provision Tool — SPEC 007.2 (Revised)
 
-## Purpose
+## Overview
 
-A CLI tool (`provision.py`) that provisions a new agent container end-to-end:
-1. Generates or loads agent framework identity/config
-2. Sets up workspace files from template (AGENTS.md, SOUL.md, etc.)
-3. Starts the container with all mounts
-4. Returns the container ready to receive messages via inbox
+agentia provisions and manages agent **instances** (containers) from agent **templates** (images), organized like Docker:
 
-## Key Architectural Property: Framework-Agnostic
+| Docker concept | agentia concept |
+|---------------|-----------------|
+| Image | Agent template — workspace config + role definition + framework config |
+| Container | Running/stopped agent instance — image + identity + state |
+| Registry | `~/.agentia/` directory |
+| Daemon | `provision.py` CLI — the agent runtime |
 
-The provision tool is the **adapter layer** between agentia and any agent framework. The relay/inbox doesn't know or care what's inside the container — it just sends JSON Lines messages. The provision tool handles framework specifics.
-
-```
-agentia relay/inbox
-        ↑ messages (JSON Lines)
-        │
-   ┌─────┴─────┐
-   │  Container │
-   │  ┌──────┐ │
-   │  │ Inbox │ │  ← framework-agnostic interface
-   │  │Poller │ │
-   │  └──────┘ │
-   │  ┌──────┐ │
-   │  │ Agent │ │  ← OpenClaw, Claude, Llama, etc.
-   │  │Framework│ │
-   │  └──────┘ │
-   └──────────┘
-        ↑ provision.py handles framework specifics
-```
-
-**What changes per framework:**
-- OpenClaw: generate `.openclaw/` identity files, run gateway
-- Claude: set ANTHROPIC_API_KEY, configure via `~/.claude/`
-- Llama: download model, set OLLAMA_HOST
-- Generic: just mount workspace, framework is pre-baked in image
-
-**What stays the same:** workspace layout, inbox interface, container startup, teardown.
-
-## Mental Model
-
-**Container = ephemeral unit. Identity + workspace = baked in at provision time.**
+## Registry Structure
 
 ```
-provision.py analyst "You are the Analyst"
-  → generates ~/.openclaw/analyst/
-  → creates /tmp/agentia/workspaces/analyst/ from template
-  → starts container with all mounts
-  → pairs agent to gateway
-  → returns: container running, agent ready
+~/.agentia/
+├── config.toml              # agentia global config
+├── registry.json            # index: known images, containers
+├── images/
+│   ├── analyst/
+│   │   ├── VERSION          # "latest" or "v1.0"
+│   │   ├── role.md          # SOUL.md override
+│   │   ├── workspace/       # files that go into /workspace/
+│   │   │   ├── AGENTS.md
+│   │   │   ├── TOOLS.md
+│   │   │   └── ...
+│   │   └── framework.json   # { "type": "openclaw", "setup": "..." }
+│   ├── critic/
+│   └── synthesizer/
+└── containers/
+    ├── analyst-001/
+    │   ├── container.json   # { "container_id": "analyst-001", "image": "analyst", "status": "running" }
+    │   ├── workspace/       # the actual workspace (may be modified from image)
+    │   ├── openclaw/       # generated identity (for openclaw type)
+    │   └── state/          # runtime state (logs, memory snapshots, etc.)
+    └── critic-001/
 ```
 
-On restart: re-run the same command, identity is reused.
+## The Agentia Interface (Uniform)
 
-On teardown: delete the container and optionally clean up identity/workspace.
+Every agent instance implements this interface, regardless of transport:
 
-## Command Interface
+```python
+class AgentInstance:
+    def create(image_name: str, agent_id: str) -> AgentInstance
+        """Instantiate a new container from an image."""
+
+    def start() -> None
+        """Start the agent (provisions identity, starts gateway/poller)."""
+
+    def stop() -> None
+        """Stop the agent gracefully."""
+
+    def destroy() -> None
+        """Stop and delete all state (workspace, identity, state/)."""
+
+    def send(message: str) -> str
+        """Send a message, return the response."""
+
+    def status() -> AgentStatus
+        """Returns: running | stopped | error | unknown"""
+```
+
+The `AgentInstance` interface is implemented by **adapters** — one per transport:
+
+```python
+# adapters/docker.py      — local Docker container (current implementation)
+# adapters/ssh.py         — SSH to remote cloud VM (future)
+# adapters/local.py       — local subprocess (future)
+# adapters/anthropic.py   — Anthropic Claude API (future)
+```
+
+## Adapter Interface
+
+```python
+class AgentAdapter(ABC):
+    """Translates AgentInstance calls to the actual transport."""
+
+    @abstractmethod
+    def create(self, image: ImageDef, agent_id: str, target: str) -> None:
+        """
+        Create (but do not start) an agent instance.
+        Args:
+            image: image definition
+            agent_id: unique instance name
+            target: transport-specific target (e.g. "analyst-001" for docker)
+        """
+
+    @abstractmethod
+    def start(self, agent_id: str) -> None:
+        """Start the agent — provisions identity, starts listening."""
+
+    @abstractmethod
+    def stop(self, agent_id: str) -> None:
+        """Stop the agent gracefully."""
+
+    @abstractmethod
+    def destroy(self, agent_id: str) -> None:
+        """Delete all instance state."""
+
+    @abstractmethod
+    def send_message(self, agent_id: str, message: str) -> str:
+        """Send a message, return the response."""
+
+    @abstractmethod
+    def status(self, agent_id: str) -> AgentStatus:
+        """Check if the agent is running."""
+```
+
+## Image Management
 
 ```bash
-python3 provision.py create <agent-id> <role> [options]
+# List available images
+agentia image list
 
-Options:
-  --role TEXT              Agent persona (analyst, critic, synthesizer, ...)
-  --workspace-dir DIR      Host directory for workspace mount [default: /tmp/agentia/workspaces/<agent-id>]
-  --openclaw-dir DIR       Host directory for .openclaw mount [default: /tmp/agentia/openclaw/<agent-id>]
-  --inbox-dir DIR           Host shared inbox dir [default: /tmp/agentia/inbox]
-  --image NAME              Docker image [default: agentia]
-  --no-cleanup             Don't clean up partial failures
-  --teardown               Tear down existing agent instead of creating
+# Pull an image from a registry (future)
+agentia image pull analyst
 
-Examples:
-  python3 provision.py create analyst "You are the Analyst"
-  python3 provision.py create critic "You are the Critic" --workspace-dir /data/critic
-  python3 provision.py teardown analyst
+# Build a new image from a workspace template
+agentia image build analyst --from workspaces/roles/analyst
+
+# Inspect an image
+agentia image inspect analyst
 ```
 
-## Provisioning Workflow (create)
-
-### Step 1: Prepare directories
-
-```
-/tmp/agentia/
-├── inbox/
-│   ├── analyst.jsonl
-│   └── critic.jsonl
-├── workspaces/
-│   └── analyst/          ← created from template
-│       ├── AGENTS.md
-│       ├── SOUL.md
-│       ├── IDENTITY.md
-│       ├── USER.md
-│       ├── TOOLS.md
-│       ├── MEMORY.md
-│       └── memory/
-└── openclaw/
-    └── analyst/          ← created by OpenClaw gateway
-        ├── identity.json
-        └── agents/
-```
-
-### Step 2: Generate or load OpenClaw identity
-
-**If `--openclaw-dir` is empty or doesn't exist:**
-1. Start a temporary gateway container in "setup mode":
-   ```bash
-   docker run --rm \
-     -v $OPENCLAW_DIR:/root/.openclaw \
-     -e OPENCLAW_SETUP_MODE=1 \
-     -e OPENCLAW_AUTO_PAIR=1 \
-     agentia gateway --no-token &
-   ```
-2. Wait for gateway to generate identity files
-3. Read the gateway URL from stdout or `gateway.json`
-4. Kill the temporary container
-
-**If `--openclaw-dir` already exists:**
-- Skip — identity is already provisioned, reuse it
-
-### Step 3: Build workspace from template
+## Container Lifecycle
 
 ```bash
-mkdir -p $WORKSPACE_DIR
-cp -r workspaces/template/* $WORKSPACE_DIR/
-# Customize per agent:
-#   - Fill in SOUL.md with role description
-#   - Copy role-specific AGENTS.md from templates/
+# Create + start a new agent from an image
+agentia create analyst analyst-001
+# Equivalent to: docker run -d --name agent-analyst-001 ...
+
+# List running agents
+agentia ps
+
+# List all agents (including stopped)
+agentia ps -a
+
+# Stop an agent
+agentia stop analyst-001
+
+# Start a stopped agent
+agentia start analyst-001
+
+# Destroy an agent (irreversible)
+agentia destroy analyst-001
+
+# Send a message to an agent (CLI)
+agentia exec analyst-001 "What is the status of the project?"
 ```
 
-### Step 4: Start the agent container
+## Image Definition
+
+An image is defined by:
+
+```
+images/<name>/
+├── VERSION          — version string (latest, v1, etc.)
+├── role.md         — SOUL.md content to inject
+├── workspace/      — files copied into /workspace/
+│   ├── AGENTS.md
+│   ├── TOOLS.md
+│   └── ...
+└── framework.json   — framework-specific config
+    {
+        "type": "openclaw",
+        "setup": {
+            "identity_required": true,
+            "gateway_required": true
+        }
+    }
+```
+
+## Container Definition
+
+A container is defined by:
+
+```
+containers/<agent-id>/
+├── container.json   — metadata (image ref, status, created_at)
+├── workspace/       — the agent's workspace (from image, may be modified)
+├── openclaw/       — identity directory (openclaw type only)
+└── state/          — runtime artifacts
+    ├── logs/
+    ├── memory/
+    └── sessions/
+```
+
+## Framework-Specific Notes
+
+### OpenClaw
+
+- Identity provisioned by running a temporary gateway container
+- Identity stored in `containers/<id>/openclaw/`
+- Adapter: `adapters/docker.py` (current implementation in `adapters/openclaw.py`)
+
+### SSH (future)
+
+- Target: `user@host:port` instead of container name
+- Adapter: `adapters/ssh.py`
+- Workspace synced via rsync or SFTP
+
+### Anthropic Claude API (future)
+
+- No container needed — direct API calls
+- Adapter: `adapters/anthropic.py`
+- Identity = API key
+
+## CLI Interface (Revised)
 
 ```bash
-docker run -d --name agent-$AGENT_ID \
-  --restart unless-stopped \
-  -v $INBOX_DIR:/workspace/inbox \
-  -v $WORKSPACE_DIR:/workspace \
-  -v $OPENCLAW_DIR:/root/.openclaw \
-  $IMAGE poller --agent-id $AGENT_ID --mode agent
+# Image management
+agentia image list
+agentia image build <name> [--from <workspace-template>] [--role <role-name>]
+agentia image inspect <name>
+agentia image rm <name>
+
+# Container management
+agentia create <image> <agent-id>   # create + start
+agentia ps [-a]                      # list containers
+agentia start <agent-id>
+agentia stop <agent-id>
+agentia restart <agent-id>
+agentia destroy <agent-id>
+agentia inspect <agent-id>
+
+# Interact
+agentia exec <agent-id> <message>    # send message, print response
+agentia logs <agent-id>               # tail container logs
+agentia attach <agent-id>            # interactive REPL
+
+# Registry
+agentia registry info                # show ~/.agentia/ structure
 ```
 
-### Step 5: Verify agent is ready
+## Why This Design
 
-- Check container is running: `docker ps | grep agent-$AGENT_ID`
-- Check inbox file exists: `$INBOX_DIR/$AGENT_ID.jsonl`
+1. **Transport-agnostic** — the agentia interface doesn't care if an agent is a local Docker container, an SSH'd cloud VM, or an API. The adapter handles the translation.
 
-## Teardown Workflow
+2. **Images are templates** — you create N containers from the same image, each with its own identity and workspace modifications.
 
-```bash
-python3 provision.py teardown analyst
+3. **Registry is explicit** — everything is on disk in `~/.agentia/`, no hidden state.
 
-# Removes:
-#   - container: agent-analyst
-#   - workspace dir: /tmp/agentia/workspaces/analyst  (optional, --keep-state)
-#   - openclaw dir: /tmp/agentia/openclaw/analyst     (optional, --keep-state)
-```
+4. **Composable with relay/inbox** — the Moderator uses `InboxRelay` to send messages. The InboxRelay uses `agentia exec` under the hood, which goes through the adapter. So the moderator never knows or cares how the agent is actually running.
 
-## Workspace Template
+5. **Cloud-ready** — adding SSH support means agents can run on any machine you can SSH into, not just locally.
 
-```
-workspaces/template/
-├── SOUL.md          ← generic base persona
-├── IDENTITY.md
-├── USER.md          ← generic base
-├── TOOLS.md         ← generic base
-├── AGENTS.md        ← generic base
-├── MEMORY.md
-├── HEARTBEAT.md
-└── memory/
-```
+## What's Built (b72f19d)
 
-**Agent-specific customization** — passed via `--role`:
-- `SOUL.md` → role description injected into template
-- `AGENTS.md` → role-specific instructions (analyst has research rules, critic has rebuttal rules)
+The current `provision.py` is a partial implementation:
+- `create` / `teardown` / `list` / `status` commands work
+- `adapters/openclaw.py` handles Docker-based provisioning
+- Workspace templates exist at `workspaces/template/` and `workspaces/roles/`
 
-## Open Questions
+## What's Next
 
-1. **Gateway pairing** — does the temporary gateway setup need a token? Can we auto-pair non-interactively?
-2. **Role templates** — where do role-specific SOUL.md/AGENTS.md templates live? In `workspaces/roles/analyst.md`?
-3. **Cleanup policy** — keep state by default, or clean up on teardown? Research suggests keeping state.
-4. **Provision vs start** — should `create` also start the poller, or should there be a separate `start` command?
-
-## What to Build
-
-1. `provision.py` — the main CLI tool
-2. `workspaces/template/` — the base workspace template
-3. `workspaces/roles/` — role-specific template overrides (analyst.md, critic.md, etc.)
-4. `Dockerfile` — already exists, may need `OPENCLAW_SETUP_MODE` env var support
-
-## Relationship to SPEC 007 (End-to-End Test)
-
-SPEC 007's integration test needs two running containers:
-```bash
-python3 provision.py create analyst "You are the Analyst, research-focused"
-python3 provision.py create critic "You are the Critic, skeptical reviewer"
-
-# Then run the moderator test
-python3 test_moderator_inbox.py --topic "Is AI helpful?"
-```
+1. Refactor `provision.py` → `agentia` CLI with image + container subcommands
+2. Add `container.json` metadata to each container
+3. Add `agentia exec` command for sending messages
+4. Add `framework.json` to images
+5. Add SSH adapter stub (`adapters/ssh.py`) to show the pattern
