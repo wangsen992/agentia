@@ -4,94 +4,105 @@
 
 Instrument agentia to produce structured, queryable logs of everything happening in the system — without changing agent behavior.
 
-## What to Capture
+## Design Decision: Single-File Per Session
 
-**Three log streams:**
+All events for a session (including subagent traces) are written to one file: `logs/session_<SESSION_ID>.jsonl`.
 
-```
-logs/
-├── session_<SESSION_ID>.jsonl   ← one file per session run
-├── agent_<AGENT_ID>.jsonl       ← per-agent lifecycle events
-└── relay_<TIMESTAMP>.jsonl      ← message routing events
-```
+**Why single-file:**
+- Complete session story in one place — no joining required
+- Simpler implementation, no file lifecycle coordination
+- Subagent traces are fetched on-demand from the running agent, not written independently
 
-**Event types:**
+**Future consideration (not implemented):**
+Per-subagent log files could be added later if:
+- Subagent sessions run independently and long-lived
+- You need to query individual subagent histories separately
+- The file becomes too large to manage
 
-| Stream | Event | Fields |
-|--------|-------|--------|
-| `session_*.jsonl` | `send` | timestamp, adapter_type, session_id, message_preview, duration_ms, response_preview, returncode |
-| `session_*.jsonl` | `lifecycle` | timestamp, event (setup/start/stop/teardown), duration_ms |
-| `agent_*.jsonl` | `gateway_start` | timestamp, gateway_pid, port |
-| `agent_*.jsonl` | `gateway_stop` | timestamp, gateway_pid, exit_code |
-| `relay_*.jsonl` | `message_sent` | timestamp, from_agent, to_agent, correlation_id, message_preview |
-| `relay_*.jsonl` | `message_delivered` | timestamp, to_agent, delivery_time_ms |
+The linking fields (`parent_session_id`, `subagent_session_id`) are already in the log events, so migration to separate files would be backward-compatible.
 
-## Design
+## What Gets Captured
+
+**Per session, one file (`logs/session_<SESSION_ID>.jsonl`):**
+
+| Event | Fields |
+|-------|--------|
+| `session_start` | session_id, adapter_type |
+| `lifecycle_event` | event_name, phase (start/end), duration_ms |
+| `gateway_start` | gateway_pid, port |
+| `gateway_ready` | wait_seconds |
+| `gateway_stop` | gateway_pid |
+| `pairing_approved` | req_id |
+| `pairing_none` | — |
+| `send` | turn, prompt_preview, response_preview, stderr_preview, returncode, duration_ms, trace_entries, has_thinking, thinking_count, tool_call_count, has_subagents, subagent_count |
+| `thinking_snapshot` | turn, thinking_blocks (list of {timestamp, thinking, signature}) |
+| `subagents_spawned` | turn, subagents (list of {session_id, agent_id, message}) |
+| `subagent_session_start` | parent_session_id, subagent_session_id, subagent_agent_id, subagent_message |
+| `subagent_trace` | subagent_session_id, trace_entries, has_thinking, thinking_count, tool_call_count, thinking |
+| `subagent_session_end` | subagent_session_id |
+| `session_end` | session_id |
+
+## Architecture
 
 ```
 observability/
 ├── __init__.py
-├── logger.py          ← StructuredLogger (JSON Lines writer, thread-safe)
-├── session.py         ← SessionLogger (per-run, used by harness)
-└── adapters/
-    └── openclaw.py   ← OpenClawAdapter instrumentation
+├── logger.py              ← StructuredLogger (thread-safe JSON Lines writer)
+├── session.py             ← SessionLogger (context manager + helpers)
+└── session_trace.py       ← Trace parsing utilities (extract_thinking, extract_subagent_ids, parse_trace)
 ```
 
 **StructuredLogger** — thread-safe, writes JSON Lines to file:
 ```python
-logger = StructuredLogger("session", session_id="abc123")
-logger.log("send", message_preview="What is 2+2?", duration_ms=1234, ...)
+logger = StructuredLogger("session", key="abc123")
+logger.log("send", duration_ms=1234, ...)
 ```
 
-**SessionLogger** — context manager that manages log file lifecycle:
+**SessionLogger** — context manager with lifecycle and trace helpers:
 ```python
-with SessionLogger(session_id, adapter_type="openclaw") as logger:
-    adapter.send("What is 2+2?")
-    logger.log_response(result)
+with SessionLogger("openclaw", session_id="abc") as logger:
+    adapter.send("What is 2+2?")  # sends with trace → logger auto-captures
 ```
 
-**Harnesses get logging for free** — pass `log=True` to harness:
+**session_trace.py** — trace parsing utilities:
 ```python
-harness = MultiTurnHarness(workspace=args.workspace, log=True)
-result = harness.run(args.prompt, ...)
-# logs/ now has session_<id>.jsonl with everything captured
+thinking = extract_thinking(trace)
+subagent_ids = extract_subagent_ids(trace)
+parsed = parse_trace(trace)  # full structured parse
 ```
 
-## What Gets Logged
+## Implementation Status
 
-From `OpenClawAdapter`:
-- `setup_start` / `setup_done` (with duration)
-- `gateway_start` (gateway PID, port)
-- `gateway_ready` (with time-to-ready)
-- `gateway_stop` (with exit code)
-- `send_start` / `send_done` (per message, with duration)
-- `teardown_done`
-
-From harnesses:
-- Turn number, prompt, response, duration
-- Subagent detection (had_subagents result)
-
-From relay (when built):
-- Message routing events
-- Correlation IDs
-- Delivery confirmation
-
-## Implementation Order
-
-1. `observability/logger.py` — StructuredLogger base class
-2. `observability/session.py` — SessionLogger context manager
-3. `OpenClawAdapter` — add logging to all lifecycle and send events
-4. `harnesses` — add `--log/--no-log` flag, pass logger to adapter
+✅ logger.py — StructuredLogger with thread-safe JSON Lines
+✅ session.py — SessionLogger with context manager, log_send, capture_subagent_traces
+✅ session_trace.py — extract_thinking, extract_subagent_ids, parse_trace
+✅ OpenClawAdapter — all lifecycle and send events logged
+✅ All harnesses — `--log` flag (single/multi/ipc) or `LOG=1` env var (interactive/gateway)
 
 ## Output Format
 
 Each line is a valid JSON object:
 ```json
-{"timestamp": "2026-04-06T02:57:00.123Z", "event": "send", "session_id": "abc123", "message_preview": "What is 2+2?", "duration_ms": 1234, "returncode": 0}
+{"timestamp": "2026-04-06T03:15:59.628+00:00", "event": "send", "stream": "session", "key": "abc123", "adapter_type": "openclaw", "turn": 1, "prompt_preview": "What is 2+2?", "response_preview": "4", "duration_ms": 9980.62, "has_thinking": true, "thinking_count": 1, "has_subagents": false}
 ```
 
-Can be queried with `jq`:
+Query examples:
 ```bash
-cat logs/session_abc123.jsonl | jq '.event == "send"'
-cat logs/session_abc123.jsonl | jq '.duration_ms > 5000'
+# All send events with timing
+cat logs/session_abc123.jsonl | jq 'select(.event == "send")'
+
+# Sessions that spawned subagents
+cat logs/session_abc123.jsonl | jq 'select(.has_subagents == true)'
+
+# Thinking blocks
+cat logs/session_abc123.jsonl | jq 'select(.event == "thinking_snapshot")'
+
+# Subagent traces
+cat logs/session_abc123.jsonl | jq 'select(.event == "subagent_trace")'
 ```
+
+## Open Questions
+
+1. **Per-agent log files** — decide later based on file size and query needs
+2. **Relay log stream** — when inbox/relay is built, add `relay_*.jsonl` stream
+3. **Trace verbosity** — currently logs all thinking. May want to truncate for storage.
