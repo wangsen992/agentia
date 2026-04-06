@@ -105,6 +105,13 @@ class ExecRelay:
             return False
 
     def send(self, agent_id: str, message: str) -> Optional[str]:
+        """Send a message to an agent and return the response.
+
+        Accepts str or dict. If dict, serialized as JSON.
+        """
+        if isinstance(message, dict):
+            import json
+            message = json.dumps(message)
         """Send a message to an agent and return the response."""
         conn = self.agents.get(agent_id)
         if not conn:
@@ -135,6 +142,10 @@ class ExecRelay:
     def close(self):
         """Clean up (no-op for exec relay)."""
         pass
+
+    def close_all(self) -> None:
+        """Clean up all connections."""
+        self.close()
 
 
 if __name__ == "__main__":

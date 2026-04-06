@@ -23,6 +23,7 @@
 #   docker run agentia single "Hello world"     # single prompt
 #   docker run agentia multi --prompt "..."     # multi-turn automated
 #   docker run -it agentia gateway               # gateway-only (debugging)
+#   docker run -it agentia poller --agent-id foo  # inbox poller (long-running)
 #
 
 set -e
@@ -43,6 +44,7 @@ if [ "$HARNESS" = "list" ]; then
 	echo "  multi         Multi-turn automated — spawns subagents, waits, synthesizes"
 	echo "  single        One-shot — sends one prompt, prints response, exits"
 	echo "  gateway       Gateway-only — starts gateway, keeps container alive"
+	echo "  poller        Inbox polling agent — long-running, processes inbox messages"
 	echo "  list          Show this list"
 	echo "  help          Show full help documentation"
 	echo ""
@@ -71,6 +73,10 @@ if [ "$HARNESS" = "help" ]; then
 	echo ""
 	echo "  gateway"
 	echo "    Gateway-only mode for debugging. Starts gateway, keeps container alive."
+	echo ""
+	echo "  poller [--agent-id ID] [--poll-interval N] [--mode echo|agent]"
+	echo "    Long-running inbox poller. Processes messages from shared inbox."
+	echo "    Use --mode agent to drive OpenClaw agent for each message."
 	echo ""
 	echo "NOTES:"
 	echo "  - Each harness calls adapter.setup() / adapter.teardown() for lifecycle"
@@ -110,6 +116,11 @@ gateway)
 	echo "Adapter will call setup() → start gateway, keep alive." >&2
 	echo "---" >&2
 	exec python3 "${RUNNERS_DIR}/gateway_harness.py"
+	;;
+
+poller)
+	echo "=== Starting INBOX POLLER ===" >&2
+	exec python3 "${RUNNERS_DIR}/inbox_poller.py" "$@"
 	;;
 
 *)
