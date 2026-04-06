@@ -179,3 +179,40 @@ class OpenClawAdapter(AgentAdapter):
     def is_running(self) -> bool:
         """Always False — subprocess exits after each send."""
         return False
+
+    def get_session_trace(self, session_id: Optional[str] = None) -> list:
+        """
+        Read session trace JSONL for this adapter's session.
+
+        Returns list of trace entries from OpenClaw's session JSONL file.
+        """
+        import json
+        from pathlib import Path
+
+        sid = session_id or self.session_id
+        if not sid:
+            return []
+
+        sessions_dir = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
+        if not sessions_dir.exists():
+            return []
+
+        session_files = sorted(
+            sessions_dir.glob(f"{sid}*.jsonl"),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True
+        )
+
+        if not session_files:
+            return []
+
+        entries = []
+        with open(session_files[0]) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+        return entries

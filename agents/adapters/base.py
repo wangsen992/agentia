@@ -100,6 +100,21 @@ class AgentAdapter(ABC):
         """Return current session ID."""
         return self.session_id
 
+    def get_session_trace(self, session_id: Optional[str] = None) -> list:
+        """
+        Read session trace for this session.
+
+        Returns a list of trace entries (format is adapter-specific).
+        Used by harnesses to detect subagent spawning, inspect behavior, etc.
+
+        Default implementation raises NotImplementedError.
+        Subclasses should override if they expose a trace format.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not expose a session trace. "
+            f"Override get_session_trace() in your adapter."
+        )
+
     def __enter__(self):
         self.setup()
         self.start()

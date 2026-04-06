@@ -23,7 +23,7 @@ def main():
     print("=== Gateway-Only Mode ===", flush=True)
     print("Starting adapter.setup()...", flush=True)
 
-    adapter = get_adapter("openclaw")
+    adapter = get_adapter()
     adapter.setup()
 
     print("Gateway running. Press Ctrl+C to exit.", flush=True)

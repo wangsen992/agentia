@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
-IPC Harness for OpenClaw Agent Experiments
+IPC Harness — two-turn relay pattern.
 
-Uses two-turn relay pattern via OpenClaw agent (IPC path).
-Built on AgentAdapter — switches runtimes via get_adapter("openclaw").
+Built on AgentAdapter — decoupled from OpenClaw specifics.
+Session trace read via adapter.get_session_trace().
 
 Pattern:
 - Turn 1: Agent spawns subagents, exits naturally
 - Optional Turn 2: If subagents were spawned, agent reads results and synthesizes
-
-Detection: Inspect session trace for sessions_spawn calls.
 """
 
 import json
-import os
-import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -22,35 +19,6 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.adapters import get_adapter
-
-
-SESSION_DIR = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
-
-
-def get_session_trace(session_id: str) -> list:
-    """Read session trace JSONL and return list of entries."""
-    if not SESSION_DIR.exists():
-        return []
-
-    session_files = sorted(
-        SESSION_DIR.glob(f"{session_id}*.jsonl"),
-        key=lambda f: f.stat().st_mtime,
-        reverse=True
-    )
-
-    if not session_files:
-        return []
-
-    entries = []
-    with open(session_files[0]) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-    return entries
 
 
 def had_subagents(trace: list) -> bool:
@@ -97,26 +65,15 @@ class IPCHarness:
     def __init__(self, workspace: Optional[str] = None, wait_seconds: float = 30.0):
         self.workspace = workspace
         self.wait_seconds = wait_seconds
-        self._adapter = None
 
     def run(self, prompt: str, expected_files: Optional[list] = None) -> dict:
-        """
-        Run agent with the two-turn relay pattern.
-
-        Args:
-            prompt: The task prompt for the agent
-            expected_files: Optional list of files to wait for before Turn 2
-
-        Returns:
-            dict with: turn1_response, turn2_needed, turn2_response, trace
-        """
-        self._adapter = get_adapter("openclaw", workspace=self.workspace)
+        self._adapter = get_adapter(workspace=self.workspace)
         self._adapter.setup()
         session_id = self._adapter.start()
 
         # ── Turn 1 ───────────────────────────────────────────────────────────
         result1 = self._adapter.send(prompt)
-        trace1 = get_session_trace(session_id)
+        trace1 = self._adapter.get_session_trace(session_id)
 
         needs_turn2 = had_subagents(trace1)
 
@@ -140,7 +97,7 @@ class IPCHarness:
             time.sleep(self.wait_seconds)
 
         result2 = self._adapter.send("Continue where you left off")
-        trace2 = get_session_trace(session_id)
+        trace2 = self._adapter.get_session_trace(session_id)
 
         response["turn2"] = {"stdout": result2.stdout, "stderr": result2.stderr, "returncode": result2.returncode}
         response["trace"] = trace2
@@ -153,7 +110,7 @@ class IPCHarness:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="IPC Harness for OpenClaw")
+    parser = argparse.ArgumentParser(description="IPC Harness")
     parser.add_argument("--prompt", required=True, help="Task prompt")
     parser.add_argument("--workspace", help="Workspace directory")
     parser.add_argument("--wait", type=float, default=30.0, help="Wait seconds before Turn 2")

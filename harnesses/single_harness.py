@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Single-Shot Harness for OpenClaw
+Single-Shot Harness
 
 Usage:
     python3 /workspace/runners/single_harness.py "Your prompt here"
@@ -9,6 +9,8 @@ Sends one prompt, prints the response, exits.
 
 To switch agent runtime:
     RUNTIME=pi python3 single_harness.py "Your prompt here"
+
+Fully decoupled — uses AgentAdapter interface only.
 """
 
 import os
@@ -16,9 +18,8 @@ import sys
 import uuid
 from pathlib import Path
 
-# Agent adapter
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from agents.adapters import get_adapter, AgentResponse
+from agents.adapters import get_adapter
 
 
 def main():
@@ -27,9 +28,9 @@ def main():
         sys.exit(1)
 
     prompt = " ".join(sys.argv[1:])
-    runtime = os.environ.get("RUNTIME", "openclaw")
+    runtime = os.environ.get("RUNTIME")  # None → defaults to "openclaw"
 
-    print(f"[Runtime: {runtime}] Sending prompt...", file=sys.stderr)
+    print(f"[Runtime: {runtime or 'openclaw (default)'}] Sending prompt...", file=sys.stderr)
 
     adapter = get_adapter(runtime)
     adapter.setup()

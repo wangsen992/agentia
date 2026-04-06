@@ -8,49 +8,20 @@ Pattern:
 - Continue until: agent returns final answer (no more subagents to spawn)
 
 Key insight: Harness just sends "Continue" repeatedly. Agent handles everything.
+
+Uses AgentAdapter — fully decoupled from OpenClaw specifics.
+Session trace read via adapter.get_session_trace().
 """
 
 import sys
 import json
 import time
 import uuid
-import os
 from pathlib import Path
 from typing import Optional
 
-# Agent adapter — switch runtime by changing get_adapter("openclaw") → get_adapter("pi"), etc.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.adapters import get_adapter
-
-
-SESSION_DIR = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
-
-
-def get_session_trace(session_id: str) -> list:
-    """Read session trace JSONL and return list of entries."""
-    sessions_dir = SESSION_DIR
-    if not sessions_dir.exists():
-        return []
-
-    session_files = sorted(
-        sessions_dir.glob(f"{session_id}*.jsonl"),
-        key=lambda f: f.stat().st_mtime,
-        reverse=True
-    )
-
-    if not session_files:
-        return []
-
-    entries = []
-    with open(session_files[0]) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
-    return entries
 
 
 def had_subagents(trace: list) -> bool:
@@ -81,39 +52,19 @@ def send_turn(adapter, message: str) -> dict:
 
 class MultiTurnHarness:
     """
-    Multi-turn harness using OpenClawAdapter.
+    Multi-turn harness using AgentAdapter.
 
     The agent stays alive across turns via persistent session.
     Harness sends "Continue" until agent signals done.
-
-    Flow:
-    1. adapter.setup() → provision gateway
-    2. Send initial task
-    3. Agent spawns subagents, returns
-    4. Harness sends "Continue"
-    5. Agent checks subagent results, may spawn more
-    6. Repeat until no more subagents
-    7. adapter.stop() + adapter.teardown() → kill gateway
     """
 
     def __init__(self, workspace: Optional[str] = None, max_turns: int = 10):
         self.workspace = workspace
         self.max_turns = max_turns
         self.turns = []
-        self.traces = []
 
     def run(self, prompt: str, wait_seconds: float = 15.0) -> dict:
-        """
-        Run multi-turn delegation workflow.
-
-        Args:
-            prompt: Initial task prompt
-            wait_seconds: Time to wait between turns for subagent completion
-
-        Returns:
-            dict with: session_id, turns (list of responses), final_answer
-        """
-        self._adapter = get_adapter("openclaw", workspace=self.workspace)
+        self._adapter = get_adapter(workspace=self.workspace)
         self._adapter.setup()
         session_id = self._adapter.start()
 
@@ -121,10 +72,10 @@ class MultiTurnHarness:
             # ── Turn 1 ───────────────────────────────────────────────────────────
             print(f"[Turn 1] Sending initial prompt...")
             result1 = send_turn(self._adapter, prompt)
-            trace1 = get_session_trace(session_id)
+            trace1 = self._adapter.get_session_trace(session_id)
 
             self.turns.append({"turn": 1, "response": result1, "trace": trace1})
-            self.traces = trace1
+            traces = trace1
 
             print(f"[Turn 1] Response: {result1['stdout'][:200].strip()}")
 
@@ -132,7 +83,7 @@ class MultiTurnHarness:
             turn_num = 1
 
             while turn_num < self.max_turns:
-                if not had_subagents(self.traces):
+                if not had_subagents(traces):
                     print(f"[Turn {turn_num}] No subagents spawned → Final answer")
                     break
 
@@ -142,10 +93,10 @@ class MultiTurnHarness:
                 turn_num += 1
                 print(f"[Turn {turn_num}] Continue...")
                 result = send_turn(self._adapter, "Continue where you left off")
-                trace = get_session_trace(session_id)
+                trace = self._adapter.get_session_trace(session_id)
 
                 self.turns.append({"turn": turn_num, "response": result, "trace": trace})
-                self.traces = trace
+                traces = trace
 
                 print(f"[Turn {turn_num}] Response: {result['stdout'][:200].strip()}")
 
