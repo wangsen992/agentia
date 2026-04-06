@@ -5,29 +5,36 @@ Gateway-Only Harness for OpenClaw
 Usage:
     python3 /workspace/runners/gateway_harness.py
 
-Keeps the container alive while the gateway runs. No agent session is started.
-An external harness or tool connects to the gateway directly.
+Keeps the container alive while the gateway runs.
+Uses OpenClawAdapter lifecycle to manage the gateway.
+
 Press Ctrl+C to exit.
 """
 
 import signal
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.adapters import get_adapter
 
 
 def main():
     print("=== Gateway-Only Mode ===", flush=True)
-    print(
-        "Gateway is running. Connect an external harness to drive the agent.",
-        flush=True,
-    )
-    print("Press Ctrl+C to exit.", flush=True)
+    print("Starting adapter.setup()...", flush=True)
+
+    adapter = get_adapter("openclaw")
+    adapter.setup()
+
+    print("Gateway running. Press Ctrl+C to exit.", flush=True)
 
     try:
         signal.pause()
     except KeyboardInterrupt:
         pass
 
-    print("\n[Exiting]", flush=True)
+    print("\n[Exiting] Running teardown...", flush=True)
+    adapter.teardown()
 
 
 if __name__ == "__main__":

@@ -5,15 +5,15 @@ Minimal contract that all agent runtimes must implement.
 The relay and harnesses talk to this, not to specific runtimes.
 
 Design rationale:
+- setup() / teardown() handle lifecycle (e.g., gateway provisioning for OpenClaw)
 - start() is non-blocking — agent runs in background (needed for async)
 - send() is blocking — waits for response (simpler for harnesses)
 - Both can be overridden for async-capable adapters
 """
 
-import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Optional, Any
+from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -28,15 +28,42 @@ class AgentAdapter(ABC):
     """
     Minimal interface all agent runtimes must implement.
 
+    Lifecycle:
+        adapter.setup()     # provision gateway, identity, etc. (once)
+        adapter.start()     # start agent session
+        adapter.send()       # send message, get response
+        ... more sends ...
+        adapter.stop()       # stop agent session
+        adapter.teardown()   # clean up gateway, identity, etc. (once)
+
     Subclass this to add a new agent runtime:
         class PiAgentAdapter(AgentAdapter):
-            def start(self, session_id, **opts): ...
-            def send(self, message: str) -> AgentResponse: ...
+            def setup(self): ...    # nothing for pi-agent
+            def start(self, session_id=None): return session_id
+            def send(self, message): return AgentResponse(...)
             def stop(self): ...
-            def is_running(self) -> bool: ...
+            def teardown(self): ...  # nothing for pi-agent
     """
 
     session_id: Optional[str] = None
+
+    def setup(self) -> None:
+        """
+        Lifecycle hook: called once before first use.
+
+        For OpenClaw: provisions device identity, starts gateway, approves pairings.
+        For pi-agent: typically a no-op.
+        Override in subclass if needed.
+        """
+
+    def teardown(self) -> None:
+        """
+        Lifecycle hook: called once when done.
+
+        For OpenClaw: kills gateway, cleans up identity.
+        For pi-agent: typically a no-op.
+        Override in subclass if needed.
+        """
 
     @abstractmethod
     def start(self, session_id: Optional[str] = None, **opts) -> str:
@@ -58,7 +85,7 @@ class AgentAdapter(ABC):
 
     @abstractmethod
     def stop(self) -> None:
-        """Stop the agent and clean up."""
+        """Stop the agent and clean up session."""
 
     def is_running(self) -> bool:
         """
@@ -74,8 +101,10 @@ class AgentAdapter(ABC):
         return self.session_id
 
     def __enter__(self):
+        self.setup()
         self.start()
         return self
 
     def __exit__(self, *args):
         self.stop()
+        self.teardown()

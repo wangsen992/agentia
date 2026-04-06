@@ -8,27 +8,31 @@ Usage:
 Each line from stdin is sent as a turn to the agent via a persistent session.
 Responses are printed to stdout.
 
-Requires the container gateway to be running (started by the container CMD).
+Uses OpenClawAdapter — calls setup() to provision gateway,
+then runs the interactive REPL, then teardown() on exit.
 """
 
-import subprocess
-import uuid
-import sys
+import json
 import os
-import time
+import sys
+import uuid
+from pathlib import Path
 
-SESSION_DIR = os.path.expanduser("~/.openclaw/agents/main/sessions")
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from agents.adapters import get_adapter
+
+
+SESSION_DIR = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
 
 
 def get_session_trace(session_id: str) -> list:
     """Read session trace JSONL and return list of entries."""
-    sessions_dir = SESSION_DIR
-    if not os.path.exists(sessions_dir):
+    if not SESSION_DIR.exists():
         return []
 
     session_files = sorted(
-        [f for f in os.listdir(sessions_dir) if f.startswith(session_id) and f.endswith(".jsonl")],
-        key=lambda f: os.path.getmtime(os.path.join(sessions_dir, f)),
+        SESSION_DIR.glob(f"{session_id}*.jsonl"),
+        key=lambda f: f.stat().st_mtime,
         reverse=True
     )
 
@@ -36,71 +40,54 @@ def get_session_trace(session_id: str) -> list:
         return []
 
     entries = []
-    with open(os.path.join(sessions_dir, session_files[0])) as f:
+    with open(session_files[0]) as f:
         for line in f:
             line = line.strip()
             if line:
                 try:
-                    entries.append(__import__("json").loads(line))
+                    entries.append(json.loads(line))
                 except json.JSONDecodeError:
                     pass
     return entries
 
 
-def send_turn(session_id: str, message: str) -> dict:
-    """Send a turn to the agent via openclaw agent CLI."""
-    cmd = [
-        "openclaw", "agent",
-        "--session-id", session_id,
-        "--message", message
-    ]
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=120
-    )
-
-    return {
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "returncode": result.returncode
-    }
-
-
 def main():
-    import json
-
     session_id = f"itxn-{uuid.uuid4().hex[:8]}"
     print(f"=== OpenClaw Interactive Session ===", flush=True)
     print(f"Session ID: {session_id}", flush=True)
-    print(f"Type a message and press Enter. Ctrl+C to exit.", flush=True)
+    print(f"Setting up adapter...", flush=True)
+
+    adapter = get_adapter("openclaw")
+    adapter.setup()
+    adapter.start(session_id)
+
+    print(f"Ready. Type a message and press Enter. Ctrl+C to exit.", flush=True)
     print(f"---", flush=True)
 
-    while True:
-        try:
+    try:
+        while True:
             message = input("[You] ")
             if not message.strip():
                 print()
                 continue
 
-            result = send_turn(session_id, message)
+            result = adapter.send(message)
 
-            if result["stderr"] and "error" in result["stderr"].lower():
-                print(f"[Error] {result['stderr'][:500]}", flush=True)
+            if result.stderr and "error" in result.stderr.lower():
+                print(f"[Error] {result.stderr[:500]}", flush=True)
 
-            if result["stdout"]:
-                print(f"\n[Agent] {result['stdout']}", flush=True)
+            if result.stdout:
+                print(f"\n[Agent] {result.stdout}", flush=True)
 
             print(f"---", flush=True)
 
-        except KeyboardInterrupt:
-            print(f"\n[Exiting]", flush=True)
-            break
-        except Exception as e:
-            print(f"[Exception] {e}", flush=True)
-            break
+    except KeyboardInterrupt:
+        print(f"\n[Exiting]", flush=True)
+    except Exception as e:
+        print(f"[Exception] {e}", flush=True)
+    finally:
+        adapter.stop()
+        adapter.teardown()
 
 
 if __name__ == "__main__":

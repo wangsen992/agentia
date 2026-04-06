@@ -72,7 +72,6 @@ def had_subagents(trace: list) -> bool:
 def send_turn(adapter, message: str) -> dict:
     """Send a turn to the agent via the adapter."""
     result = adapter.send(message)
-
     return {
         "stdout": result.stdout,
         "stderr": result.stderr,
@@ -82,17 +81,19 @@ def send_turn(adapter, message: str) -> dict:
 
 class MultiTurnHarness:
     """
-    Multi-turn harness using openclaw agent.
+    Multi-turn harness using OpenClawAdapter.
 
     The agent stays alive across turns via persistent session.
     Harness sends "Continue" until agent signals done.
 
     Flow:
-    1. Send initial task with subagent delegation
-    2. Agent spawns subagents, returns
-    3. Harness sends "Continue"
-    4. Agent checks subagent results, may spawn more subagents
-    5. Repeat until agent returns final answer
+    1. adapter.setup() → provision gateway
+    2. Send initial task
+    3. Agent spawns subagents, returns
+    4. Harness sends "Continue"
+    5. Agent checks subagent results, may spawn more
+    6. Repeat until no more subagents
+    7. adapter.stop() + adapter.teardown() → kill gateway
     """
 
     def __init__(self, workspace: Optional[str] = None, max_turns: int = 10):
@@ -112,60 +113,58 @@ class MultiTurnHarness:
         Returns:
             dict with: session_id, turns (list of responses), final_answer
         """
-        # Create agent adapter (swap "openclaw" → "pi" to use different runtime)
         self._adapter = get_adapter("openclaw", workspace=self.workspace)
+        self._adapter.setup()
         session_id = self._adapter.start()
 
-        # ── Turn 1 ───────────────────────────────────────────────────────────
-        print(f"[Turn 1] Sending initial prompt...")
-        result1 = send_turn(self._adapter, prompt)
-        trace1 = get_session_trace(session_id)
+        try:
+            # ── Turn 1 ───────────────────────────────────────────────────────────
+            print(f"[Turn 1] Sending initial prompt...")
+            result1 = send_turn(self._adapter, prompt)
+            trace1 = get_session_trace(session_id)
 
-        self.turns.append({"turn": 1, "response": result1, "trace": trace1})
-        self.traces = trace1
+            self.turns.append({"turn": 1, "response": result1, "trace": trace1})
+            self.traces = trace1
 
-        print(f"[Turn 1] Response: {result1['stdout'][:200].strip()}")
+            print(f"[Turn 1] Response: {result1['stdout'][:200].strip()}")
 
-        # ── Multi-Turn Loop ─────────────────────────────────────────────────
-        turn_num = 1
+            # ── Multi-Turn Loop ─────────────────────────────────────────────────
+            turn_num = 1
 
-        while turn_num < self.max_turns:
-            # Check if last turn had subagents
-            if not had_subagents(self.traces):
-                # No subagents in last turn → agent is done
-                print(f"[Turn {turn_num}] No subagents spawned → Final answer")
-                break
+            while turn_num < self.max_turns:
+                if not had_subagents(self.traces):
+                    print(f"[Turn {turn_num}] No subagents spawned → Final answer")
+                    break
 
-            # Wait for subagent completion
-            print(f"[Turn {turn_num}] Subagents spawned, waiting {wait_seconds}s...")
-            time.sleep(wait_seconds)
+                print(f"[Turn {turn_num}] Subagents spawned, waiting {wait_seconds}s...")
+                time.sleep(wait_seconds)
 
-            # Get trace BEFORE next turn to detect subagents
-            prev_trace = self.traces
+                turn_num += 1
+                print(f"[Turn {turn_num}] Continue...")
+                result = send_turn(self._adapter, "Continue where you left off")
+                trace = get_session_trace(session_id)
 
-            # Send Continue
-            turn_num += 1
-            print(f"[Turn {turn_num}] Continue...")
-            result = send_turn(self._adapter, "Continue where you left off")
-            trace = get_session_trace(session_id)
+                self.turns.append({"turn": turn_num, "response": result, "trace": trace})
+                self.traces = trace
 
-            self.turns.append({"turn": turn_num, "response": result, "trace": trace})
-            self.traces = trace
+                print(f"[Turn {turn_num}] Response: {result['stdout'][:200].strip()}")
 
-            print(f"[Turn {turn_num}] Response: {result['stdout'][:200].strip()}")
+            # ── Build Final Answer ───────────────────────────────────────────────
+            final_answer = "\n\n".join(
+                f"=== Turn {t['turn']} ===\n{t['response']['stdout'].strip()}"
+                for t in self.turns
+            )
 
-        # ── Build Final Answer ───────────────────────────────────────────────
-        final_answer = "\n\n".join(
-            f"=== Turn {t['turn']} ===\n{t['response']['stdout'].strip()}"
-            for t in self.turns
-        )
+            return {
+                "session_id": session_id,
+                "turns": self.turns,
+                "total_turns": len(self.turns),
+                "final_answer": final_answer
+            }
 
-        return {
-            "session_id": session_id,
-            "turns": self.turns,
-            "total_turns": len(self.turns),
-            "final_answer": final_answer
-        }
+        finally:
+            self._adapter.stop()
+            self._adapter.teardown()
 
 
 if __name__ == "__main__":

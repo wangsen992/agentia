@@ -32,6 +32,7 @@ def main():
     print(f"[Runtime: {runtime}] Sending prompt...", file=sys.stderr)
 
     adapter = get_adapter(runtime)
+    adapter.setup()
     adapter.start(f"single-{uuid.uuid4().hex[:8]}")
     response = adapter.send(prompt)
 
@@ -41,6 +42,8 @@ def main():
                 print(line, file=sys.stderr)
 
     print(response.stdout)
+    adapter.stop()
+    adapter.teardown()
 
 
 if __name__ == "__main__":
