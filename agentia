@@ -1,0 +1,651 @@
+#!/usr/bin/env python3
+"""
+agentia — Agent Registry and Runtime
+
+A Docker-like CLI for managing agent instances.
+
+Usage:
+    agentia image list
+    agentia image build <name> --from <workspace-template> --role <role>
+    agentia image inspect <name>
+    agentia create <image> <agent-id>
+    agentia ps [-a]
+    agentia start <agent-id>
+    agentia stop <agent-id>
+    agentia destroy <agent-id>
+    agentia exec <agent-id> <message>
+    agentia logs <agent-id>
+    agentia status <agent-id>
+"""
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+DEFAULT_REGISTRY = Path.home() / ".agentia"
+DEFAULT_IMAGE = "agentia"
+
+
+# ─── Registry ────────────────────────────────────────────────────────────────
+
+class Registry:
+    """
+    Manages ~/.agentia/ — images and containers.
+    """
+
+    def __init__(self, registry_dir: Path = DEFAULT_REGISTRY):
+        self.registry_dir = registry_dir
+        self.images_dir = registry_dir / "images"
+        self.containers_dir = registry_dir / "containers"
+        self.registry_file = registry_dir / "registry.json"
+        self.config_file = registry_dir / "config.toml"
+
+    def ensure_dirs(self):
+        self.images_dir.mkdir(parents=True, exist_ok=True)
+        self.containers_dir.mkdir(parents=True, exist_ok=True)
+
+    def load_registry(self) -> dict:
+        if self.registry_file.exists():
+            return json.loads(self.registry_file.read_text())
+        return {"images": {}, "containers": {}}
+
+    def save_registry(self, data: dict):
+        self.registry_file.write_text(json.dumps(data, indent=2))
+
+    # ─── Images ───────────────────────────────────────────────────────────────
+
+    def list_images(self) -> list[str]:
+        data = self.load_registry()
+        return list(data.get("images", {}).keys())
+
+    def get_image(self, name: str) -> dict | None:
+        data = self.load_registry()
+        return data.get("images", {}).get(name)
+
+    def save_image(self, name: str, meta: dict):
+        data = self.load_registry()
+        if "images" not in data:
+            data["images"] = {}
+        data["images"][name] = meta
+        self.save_registry(data)
+
+    def image_dir(self, name: str) -> Path:
+        return self.images_dir / name
+
+    # ─── Containers ───────────────────────────────────────────────────────────
+
+    def list_containers(self, all_: bool = False) -> list[dict]:
+        data = self.load_registry()
+        containers = []
+        for cid, meta in data.get("containers", {}).items():
+            if not all_ and meta.get("status") == "destroyed":
+                continue
+            containers.append({"id": cid, **meta})
+        return sorted(containers, key=lambda c: c.get("created_at", ""))
+
+    def get_container(self, agent_id: str) -> dict | None:
+        data = self.load_registry()
+        return data.get("containers", {}).get(agent_id)
+
+    def save_container(self, agent_id: str, meta: dict):
+        data = self.load_registry()
+        if "containers" not in data:
+            data["containers"] = {}
+        data["containers"][agent_id] = meta
+        self.save_registry(data)
+
+    def container_dir(self, agent_id: str) -> Path:
+        return self.containers_dir / agent_id
+
+    def remove_container(self, agent_id: str):
+        data = self.load_registry()
+        if agent_id in data.get("containers", {}):
+            del data["containers"][agent_id]
+            self.save_registry(data)
+
+
+# ─── Adapter Interface ───────────────────────────────────────────────────────
+
+class AgentAdapter(Registry):
+    """
+    Base adapter — provides the agent runtime interface.
+    Subclasses implement transport-specific logic.
+    """
+
+    def create_container(self, image_name: str, agent_id: str) -> Path:
+        """
+        Create container directory structure from image.
+        Returns the container directory path.
+        """
+        raise NotImplementedError
+
+    def start_container(self, agent_id: str):
+        raise NotImplementedError
+
+    def stop_container(self, agent_id: str):
+        raise NotImplementedError
+
+    def destroy_container(self, agent_id: str):
+        raise NotImplementedError
+
+    def exec_container(self, agent_id: str, message: str) -> str:
+        raise NotImplementedError
+
+    def container_status(self, agent_id: str) -> str:
+        raise NotImplementedError
+
+
+# ─── Docker Adapter ───────────────────────────────────────────────────────────
+
+class DockerAdapter(AgentAdapter):
+    """
+    Docker-based agent runtime.
+    Agents run as containers; messages go via inbox relay.
+    """
+
+    def __init__(self, registry_dir: Path = DEFAULT_REGISTRY, image: str = "agentia"):
+        super().__init__(registry_dir)
+        self.image = image
+        self.inbox_dir = registry_dir / "inbox"
+
+    # ─── Container lifecycle ───────────────────────────────────────────────
+
+    def create_container(self, image_name: str, agent_id: str) -> Path:
+        """Create a new container from an image."""
+        container_dir = self.container_dir(agent_id)
+        image_dir = self.image_dir(image_name)
+
+        if not image_dir.exists():
+            raise ValueError(f"Image '{image_name}' not found. Run: agentia image build {image_name}")
+
+        meta = self.get_image(image_name)
+        if meta.get("framework", {}).get("type") != "openclaw":
+            raise NotImplementedError(f"Framework {meta.get('framework', {}).get('type')} not supported yet")
+
+        # Create container directory
+        container_dir.mkdir(parents=True, exist_ok=True)
+        (container_dir / "workspace").mkdir(exist_ok=True)
+        (container_dir / "state").mkdir(exist_ok=True)
+        (container_dir / "state" / "logs").mkdir(exist_ok=True)
+        (container_dir / "state" / "memory").mkdir(exist_ok=True)
+        (container_dir / "openclaw").mkdir(exist_ok=True)
+
+        # Copy workspace from image
+        img_workspace = image_dir / "workspace"
+        if img_workspace.exists():
+            for item in img_workspace.iterdir():
+                dest = container_dir / "workspace" / item.name
+                if item.is_file():
+                    shutil.copy2(item, dest)
+                elif item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+
+        # Apply role SOUL.md override
+        role_file = image_dir / "role.md"
+        if role_file.exists():
+            dest_soul = container_dir / "workspace" / "SOUL.md"
+            role_content = role_file.read_text()
+            dest_soul.write_text(role_content.strip() + "\n")
+
+        # Write container metadata
+        container_meta = {
+            "container_id": agent_id,
+            "image": image_name,
+            "status": "created",
+            "created_at": datetime.now().isoformat(),
+            "framework": meta.get("framework", {}),
+        }
+        (container_dir / "container.json").write_text(json.dumps(container_meta, indent=2))
+
+        self.save_container(agent_id, container_meta)
+        return container_dir
+
+    def start_container(self, agent_id: str):
+        """Start the agent container."""
+        container_dir = self.container_dir(agent_id)
+        meta = self.get_container(agent_id)
+        if not meta:
+            raise ValueError(f"Container '{agent_id}' not found")
+
+        # Provision OpenClaw identity
+        self._provision_openclaw_identity(agent_id)
+
+        # Create inbox file
+        self.inbox_dir.mkdir(parents=True, exist_ok=True)
+        inbox_file = self.inbox_dir / f"{agent_id}.jsonl"
+        inbox_file.touch(exist_ok=True)
+
+        # Start container
+        container_name = f"agentia-{agent_id}"
+        ws_dir = container_dir / "workspace"
+        oc_dir = container_dir / "openclaw"
+        inbox_str = str(self.inbox_dir)
+
+        gateway_token = "multi-agent-relay-token"
+        cmd = [
+            "docker", "run", "-d",
+            "--name", container_name,
+            "--restart", "unless-stopped",
+            "--network", "bridge",
+            "-v", f"{inbox_str}:/workspace/inbox",
+            "-v", f"{ws_dir}:/workspace-src",
+            "-v", f"{oc_dir}:/root/.openclaw",
+            "-e", f"OPENCLAW_GATEWAY_TOKEN={gateway_token}",
+            "-e", f"OPENCLAW_IDENTITY_TOKEN={gateway_token}",
+            "--entrypoint", "/workspace/runners/agent_entrypoint.sh",
+            self.image,
+            "poller",
+            "--agent-id", agent_id,
+            "--mode", "agent",
+            "--poll-interval", "2",
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to start container: {result.stderr}")
+
+        meta["status"] = "running"
+        self.save_container(agent_id, meta)
+        print(f"[agentia] Started {agent_id}")
+
+    def _provision_openclaw_identity(self, agent_id: str):
+        """Generate OpenClaw identity by running the gateway setup.
+
+        Runs gateway harness which calls OpenClawAdapter.setup():
+        - Patches openclaw.json for lan + token auth
+        - Starts openclaw gateway run
+        - Creates device identity files (device.json, device-auth.json)
+
+        The gateway harness is started as a temp container, runs until
+        the gateway is ready and has generated its device identity, then killed.
+        Subsequent container starts reuse the same identity.
+        """
+        container_dir = self.container_dir(agent_id)
+        oc_dir = container_dir / "openclaw"
+
+        # Check if already provisioned (device.json exists from previous run)
+        device_json = oc_dir / "identity" / "device.json"
+        if device_json.exists():
+            print(f"[agentia] OpenClaw identity exists, reusing")
+            return
+
+        print(f"[agentia] Generating OpenClaw device identity...")
+        oc_dir.mkdir(parents=True, exist_ok=True)
+        (oc_dir / "identity").mkdir(parents=True, exist_ok=True)
+        (oc_dir / "agents").mkdir(parents=True, exist_ok=True)
+
+        # Extract openclaw.json and auth-profiles.json from image (needed by setup)
+        img_cfg = Path(f"/tmp/agentia-img-cfg-{uuid.uuid4().hex[:8]}")
+        img_cfg.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["docker", "run", "--rm", "--entrypoint", "cat", self.image,
+             "/root/.openclaw/openclaw.json"],
+            stdout=open(img_cfg / "openclaw.json", "wb"),
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["docker", "run", "--rm", "--entrypoint", "cat", self.image,
+             "/root/.openclaw/agents/main/agent/auth-profiles.json"],
+            stdout=open(img_cfg / "auth-profiles.json", "wb"),
+            stderr=subprocess.DEVNULL,
+        )
+        shutil.copy2(img_cfg / "openclaw.json", oc_dir / "openclaw.json")
+        auth_dir = oc_dir / "agents" / "main" / "agent"
+        auth_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(img_cfg / "auth-profiles.json", auth_dir / "auth-profiles.json")
+        shutil.rmtree(img_cfg)
+
+        # Run gateway harness in temp container — it creates device identity
+        temp_name = f"agentia-setup-{uuid.uuid4().hex[:8]}"
+        port = 18789
+
+        proc = subprocess.Popen(
+            [
+                "docker", "run", "--rm",
+                "--name", temp_name,
+                "--network", "none",
+                "-v", f"{oc_dir}/identity:/root/.openclaw/identity",
+                "-v", f"{oc_dir}/agents:/root/.openclaw/agents",
+                "-v", f"{oc_dir}:/root/.openclaw",
+                self.image,
+                "gateway",
+                "--auth", "none",
+                "--no-pairing",
+                "--port", str(port),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        # Wait for device.json to appear (setup + gateway init takes ~5-10s)
+        timeout = 60
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            if device_json.exists():
+                break
+            time.sleep(1)
+        else:
+            stdout, stderr = proc.communicate(timeout=2)
+            print(f"[agentia] Gateway stdout: {stdout[:500]}")
+            print(f"[agentia] Gateway stderr: {stderr[:500]}")
+            raise RuntimeError("Timeout waiting for device identity")
+
+        subprocess.run(["docker", "kill", temp_name], capture_output=True)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+        print(f"[agentia] Device identity created")
+
+    def stop_container(self, agent_id: str):
+        """Stop the container."""
+        container_name = f"agentia-{agent_id}"
+        subprocess.run(["docker", "stop", container_name], capture_output=True)
+        meta = self.get_container(agent_id)
+        if meta:
+            meta["status"] = "stopped"
+            self.save_container(agent_id, meta)
+        print(f"[agentia] Stopped {agent_id}")
+
+    def destroy_container(self, agent_id: str):
+        """Stop container and delete all state."""
+        container_name = f"agentia-{agent_id}"
+        subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
+        container_dir = self.container_dir(agent_id)
+        if container_dir.exists():
+            shutil.rmtree(container_dir)
+        self.remove_container(agent_id)
+        print(f"[agentia] Destroyed {agent_id}")
+
+    def exec_container(self, agent_id: str, message: str) -> str:
+        """Send a message via inbox relay and wait for response."""
+        import sys
+        sys.path.insert(0, str(Path(__file__).parent))
+
+        inbox_dir = self.inbox_dir
+        inbox_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write message to inbox
+        msg_id = uuid.uuid4().hex
+        corr_id = uuid.uuid4().hex
+        inbox_file = inbox_dir / f"{agent_id}.jsonl"
+
+        import json as _json
+        msg_entry = _json.dumps({
+            "id": msg_id,
+            "from_agent": "cli",
+            "to_agent": agent_id,
+            "content": message,
+            "correlation_id": corr_id,
+            "timestamp": time.time(),
+        }) + "\n"
+
+        with open(inbox_file, "a") as f:
+            f.write(msg_entry)
+
+        # Wait for response
+        resp_file = inbox_dir / "responses" / f"{corr_id}.jsonl"
+        resp_dir = inbox_dir / "responses"
+        resp_dir.mkdir(exist_ok=True)
+
+        timeout = 120
+        start = time.time()
+        while time.time() - start < timeout:
+            if resp_file.exists():
+                with open(resp_file) as f:
+                    resp_data = _json.loads(f.read().strip())
+                resp_file.unlink()  # clean up
+                return resp_data.get("content", "")
+            time.sleep(0.5)
+
+        raise TimeoutError(f"No response from {agent_id} within {timeout}s")
+
+    def container_status(self, agent_id: str) -> str:
+        """Get container status."""
+        container_name = f"agentia-{agent_id}"
+        result = subprocess.run(
+            ["docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Status}}"],
+            capture_output=True, text=True,
+        )
+        if result.stdout.strip():
+            return "running"
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--filter", f"name={container_name}", "--format", "{{.Status}}"],
+            capture_output=True, text=True,
+        )
+        if result.stdout.strip():
+            return "stopped"
+        return "destroyed"
+
+
+# ─── Image Commands ───────────────────────────────────────────────────────────
+
+def cmd_image_list(adapter: DockerAdapter):
+    images = adapter.list_images()
+    if not images:
+        print("No images found. Run: agentia image build <name>")
+        return
+    for img in images:
+        meta = adapter.get_image(img)
+        version = meta.get("version", "latest")
+        framework = meta.get("framework", {}).get("type", "unknown")
+        print(f"  {img}:{version}  [{framework}]")
+
+def cmd_image_build(adapter: DockerAdapter, name: str, role: str, template: str = None):
+    """Build an image from a template."""
+    script_dir = Path(__file__).parent
+    roles_dir = script_dir / "workspaces" / "roles"
+    templates_dir = script_dir / "workspaces" / "template"
+
+    image_dir = adapter.image_dir(name)
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine source workspace
+    if role:
+        role_file = roles_dir / f"{role}.md"
+        if not role_file.exists():
+            print(f"[agentia] Role '{role}' not found in {roles_dir}")
+            return
+        role_content = role_file.read_text()
+        (image_dir / "role.md").write_text(role_content)
+
+    if template:
+        src = Path(template)
+    else:
+        src = templates_dir
+
+    # Copy workspace files
+    (image_dir / "workspace").mkdir(exist_ok=True)
+    if src.exists():
+        for item in src.iterdir():
+            dest = image_dir / "workspace" / item.name
+            if item.is_file():
+                shutil.copy2(item, dest)
+            elif item.is_dir() and item.name != "__pycache__":
+                shutil.copytree(item, dest, dirs_exist_ok=True)
+
+    # Write metadata
+    meta = {
+        "name": name,
+        "version": "latest",
+        "role": role or "default",
+        "framework": {"type": "openclaw"},
+    }
+    adapter.save_image(name, meta)
+    print(f"[agentia] Built image '{name}'")
+
+def cmd_image_inspect(adapter: DockerAdapter, name: str):
+    meta = adapter.get_image(name)
+    if not meta:
+        print(f"Image '{name}' not found")
+        return
+    print(json.dumps(meta, indent=2))
+
+def cmd_image_rm(adapter: DockerAdapter, name: str):
+    image_dir = adapter.image_dir(name)
+    if image_dir.exists():
+        shutil.rmtree(image_dir)
+    data = adapter.load_registry()
+    if name in data.get("images", {}):
+        del data["images"][name]
+        adapter.save_registry(data)
+    print(f"[agentia] Removed image '{name}'")
+
+
+# ─── Container Commands ───────────────────────────────────────────────────────
+
+def cmd_create(adapter: DockerAdapter, image_name: str, agent_id: str):
+    adapter.ensure_dirs()
+    existing = adapter.get_container(agent_id)
+    if existing and existing.get("status") != "destroyed":
+        print(f"[agentia] Container '{agent_id}' already exists ({existing.get('status')})")
+        print(f"  Run: agentia destroy {agent_id} first")
+        return
+
+    adapter.create_container(image_name, agent_id)
+    adapter.start_container(agent_id)
+    print(f"[agentia] Created and started '{agent_id}' from '{image_name}'")
+
+def cmd_ps(adapter: DockerAdapter, all_: bool):
+    containers = adapter.list_containers(all_)
+    if not containers:
+        print("No containers")
+        return
+    for c in containers:
+        status = adapter.container_status(c["id"])
+        print(f"  {c['id']}: {status}  (from {c.get('image', '?')})")
+
+def cmd_start(adapter: DockerAdapter, agent_id: str):
+    adapter.start_container(agent_id)
+
+def cmd_stop(adapter: DockerAdapter, agent_id: str):
+    adapter.stop_container(agent_id)
+
+def cmd_destroy(adapter: DockerAdapter, agent_id: str):
+    adapter.destroy_container(agent_id)
+
+def cmd_status(adapter: DockerAdapter, agent_id: str):
+    meta = adapter.get_container(agent_id)
+    if not meta:
+        print(f"Container '{agent_id}' not found")
+        return
+    status = adapter.container_status(agent_id)
+    print(f"Container: {agent_id}")
+    print(f"  Image: {meta.get('image', '?')}")
+    print(f"  Status: {status}")
+    print(f"  Created: {meta.get('created_at', '?')}")
+
+def cmd_exec(adapter: DockerAdapter, agent_id: str, message: str):
+    status = adapter.container_status(agent_id)
+    if status != "running":
+        print(f"[agentia] Container '{agent_id}' is not running ({status})")
+        return
+    try:
+        response = adapter.exec_container(agent_id, message)
+        print(response)
+    except TimeoutError as e:
+        print(f"[agentia] {e}")
+
+def cmd_logs(adapter: DockerAdapter, agent_id: str):
+    container_name = f"agentia-{agent_id}"
+    subprocess.run(["docker", "logs", "--tail", "50", container_name])
+
+
+# ─── Main CLI ────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="agentia", description="agentia agent registry and runtime")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    # Image subcommands
+    p_image = sub.add_parser("image", help="Image management")
+    p_image_sub = p_image.add_subparsers(dest="subcommand", metavar="<subcommand>")
+
+    p_image_list = p_image_sub.add_parser("list", help="List images")
+    p_image_build = p_image_sub.add_parser("build", help="Build an image")
+    p_image_build.add_argument("name", help="Image name")
+    p_image_build.add_argument("--role", help="Role name (analyst, critic, etc.)")
+    p_image_build.add_argument("--from", dest="template", help="Template directory")
+    p_image_inspect = p_image_sub.add_parser("inspect", help="Inspect an image")
+    p_image_inspect.add_argument("name", help="Image name")
+    p_image_rm = p_image_sub.add_parser("rm", help="Remove an image")
+    p_image_rm.add_argument("name", help="Image name")
+
+    # Container subcommands
+    p_create = sub.add_parser("create", help="Create and start a container")
+    p_create.add_argument("image", help="Image name")
+    p_create.add_argument("agent_id", help="Container/agent ID")
+
+    p_ps = sub.add_parser("ps", help="List containers")
+    p_ps.add_argument("-a", "--all", dest="all_", action="store_true", help="Show all containers")
+
+    p_start = sub.add_parser("start", help="Start a container")
+    p_start.add_argument("agent_id", help="Container ID")
+
+    p_stop = sub.add_parser("stop", help="Stop a container")
+    p_stop.add_argument("agent_id", help="Container ID")
+
+    p_destroy = sub.add_parser("destroy", help="Destroy a container")
+    p_destroy.add_argument("agent_id", help="Container ID")
+
+    p_status = sub.add_parser("status", help="Show container status")
+    p_status.add_argument("agent_id", help="Container ID")
+
+    p_exec = sub.add_parser("exec", help="Send message to container")
+    p_exec.add_argument("agent_id", help="Container ID")
+    p_exec.add_argument("message", nargs="...", help="Message to send")
+
+    p_logs = sub.add_parser("logs", help="Show container logs")
+    p_logs.add_argument("agent_id", help="Container ID")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 0
+
+    adapter = DockerAdapter()
+
+    if args.command == "image":
+        if args.subcommand == "list":
+            cmd_image_list(adapter)
+        elif args.subcommand == "build":
+            cmd_image_build(adapter, args.name, args.role or "", args.template)
+        elif args.subcommand == "inspect":
+            cmd_image_inspect(adapter, args.name)
+        elif args.subcommand == "rm":
+            cmd_image_rm(adapter, args.name)
+        else:
+            p_image.print_help()
+    elif args.command == "create":
+        cmd_create(adapter, args.image, args.agent_id)
+    elif args.command == "ps":
+        cmd_ps(adapter, args.all_)
+    elif args.command == "start":
+        cmd_start(adapter, args.agent_id)
+    elif args.command == "stop":
+        cmd_stop(adapter, args.agent_id)
+    elif args.command == "destroy":
+        cmd_destroy(adapter, args.agent_id)
+    elif args.command == "status":
+        cmd_status(adapter, args.agent_id)
+    elif args.command == "exec":
+        message = " ".join(args.message) if args.message else ""
+        cmd_exec(adapter, args.agent_id, message)
+    elif args.command == "logs":
+        cmd_logs(adapter, args.agent_id)
+    else:
+        parser.print_help()
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
