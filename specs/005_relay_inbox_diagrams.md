@@ -8,36 +8,24 @@ Diagrams rendered with [Mermaid Live Editor](https://mermaid.live) or GitHub Mar
 
 ```mermaid
 graph TB
-    subgraph Host["Host Machine"]
-        Mod["Moderator<br/>(InboxRelay)"]
-        subgraph Inbox["Shared Inbox Directory<br/>/tmp/inbox"]
-            A_IN["analyst.jsonl"]
-            B_IN["critic.jsonl"]
-            Resp["responses/"]
-        end
+    Mod["Moderator (InboxRelay)"]
+    subgraph Inbox["Shared Inbox Directory /tmp/inbox"]
+        A_IN["analyst.jsonl"]
+        B_IN["critic.jsonl"]
+        Resp["responses/"]
     end
-
     subgraph ContainerA["Container A: analyst"]
-        GA["Gateway"]
-        PA["Poller<br/>(--agent-id analyst)"]
+        PA["Poller"]
     end
-
     subgraph ContainerB["Container B: critic"]
-        GB["Gateway"]
-        PB["Poller<br/>(--agent-id critic)"]
+        PB["Poller"]
     end
-
-    Mod -->|"docker cp| I1"| A_IN
-    Mod -->|"docker cp| I2"| B_IN
-    Mod -->|"poll| Resp"| Mod
-    PA -->|"read| A_IN
-    PB -->|"read| B_IN
-    PA -->|"write| Resp"
-    PB -->|"write| Resp"
-
-    style Mod fill:#2563eb,color:#fff
-    style Inbox fill:#f3f4f6
-    style Resp fill:#fef3c7
+    Mod -->|"docker cp msg"| A_IN
+    Mod -->|"docker cp msg"| B_IN
+    PA -->|"read"| A_IN
+    PB -->|"read"| B_IN
+    PA -->|"write response"| Resp
+    PB -->|"write response"| Resp
 ```
 
 ---
@@ -49,19 +37,20 @@ sequenceDiagram
     participant M as Moderator
     participant IR as InboxRelay
     participant FS as /tmp/inbox
-    participant P as Poller (Container A)
+    participant P as Poller
     participant G as Gateway
 
     M->>IR: send("analyst", "What is 2+2?")
-    IR->>FS: docker cp msg.jsonl → analyst.jsonl
-    Note over IR: generates correlation_id<br/>polls response file
-    IR-->>P: [message waiting in inbox]
-    P->>P: poll (every 2s)
-    P->>FS: read analyst.jsonl
+    IR->>FS: docker cp msg.jsonl to analyst.jsonl
+    Note over IR: generates correlation_id, polls response file
+    IR-->>P: message waiting in inbox
+    loop every 2s
+        P->>FS: read analyst.jsonl
+    end
     FS-->>P: [{"id": "...", "content": "What is 2+2?"}]
     P->>G: openclaw agent --message "What is 2+2?"
     G-->>P: "2 + 2 = 4"
-    P->>FS: write response to<br/>responses/<correlation_id>.jsonl
+    P->>FS: write response to responses/<corr_id>.jsonl
     P->>FS: mark_processed(msg.id)
     IR-->>M: "2 + 2 = 4"
 ```
@@ -75,14 +64,15 @@ sequenceDiagram
     participant M as Moderator
     participant IR as InboxRelay
     participant FS as /tmp/inbox
-    participant P as Poller (Container B)
+    participant P as Poller
 
     M->>IR: send_async("critic", "do this task")
-    IR->>FS: docker cp msg.jsonl → critic.jsonl
+    IR->>FS: docker cp msg.jsonl to critic.jsonl
     IR-->>M: returns immediately (True)
     Note over P: [continues other work]
-    P->>P: poll (every 2s)
-    P->>FS: read critic.jsonl
+    loop every 2s
+        P->>FS: read critic.jsonl
+    end
     FS-->>P: [{"id": "...", "content": "do this task"}]
     P->>P: process message
     P->>FS: mark_processed(msg.id)
@@ -102,13 +92,13 @@ sequenceDiagram
     participant PB as Poller B
 
     M->>IR: broadcast(["analyst", "critic"], "Topic: AI ethics")
-    IR->>FS: docker cp msg.jsonl → analyst.jsonl
-    IR->>FS: docker cp msg.jsonl → critic.jsonl
+    IR->>FS: docker cp msg.jsonl to analyst.jsonl
+    IR->>FS: docker cp msg.jsonl to critic.jsonl
     IR-->>M: {"analyst": True, "critic": True}
     Par
-        PA->>PA: poll → read → process
+        PA->>PA: poll, read, process
     and
-        PB->>PB: poll → read → process
+        PB->>PB: poll, read, process
     End
 ```
 
@@ -127,25 +117,17 @@ sequenceDiagram
     M->>A: intro: "Topic: Is AI helpful"
     M->>C: intro: "Topic: Is AI helpful"
 
-    rect rgb(240, 248, 255)
-        Note over M,A,C: Turn 1 — Analyst speaks
-        M->>A: build_prompt(topic, history=[])
-        A-->>M: "AI is helpful because..."
-        M->>M: record TurnRecord(1, analyst, response)
-    end
+    Note over M,A,C: Turn 1 - Analyst speaks
+    M->>A: build_prompt(topic, history=empty)
+    A-->>M: "AI is helpful because..."
 
-    rect rgb(255, 248, 240)
-        Note over M,A,C: Turn 2 — Critic responds
-        M->>C: build_prompt(topic, history=[Turn 1])
-        C-->>M: "However, AI has drawbacks..."
-        M->>M: record TurnRecord(2, critic, response)
-    end
+    Note over M,A,C: Turn 2 - Critic responds
+    M->>C: build_prompt(topic, history=[Turn 1])
+    C-->>M: "However, AI has drawbacks..."
 
-    rect rgb(240, 255, 248)
-        Note over M,A,C: Turn 3 — Analyst rebuts
-        M->>A: build_prompt(topic, history=[T1, T2])
-        A-->>M: "The critic raises valid points, but..."
-    end
+    Note over M,A,C: Turn 3 - Analyst rebuts
+    M->>A: build_prompt(topic, history=[Turn 1, Turn 2])
+    A-->>M: "Valid points, but..."
 ```
 
 ---
@@ -153,17 +135,17 @@ sequenceDiagram
 ## 6. Poller Internal Flow
 
 ```mermaid
-graph TD
-    Start["start poller<br/>--agent-id analyst"]
+flowchart TD
+    Start(["start poller --agent-id analyst"])
     Poll["poll_once()"]
     Read["inbox.read_all()"]
     Empty{msgs empty?}
-    Process["for each msg:<br/>process_message()"]
-    Corr{has<br/>correlation_id?}
-    WriteResp["write response to<br/>responses/<corr_id>.jsonl"]
+    Process["for each msg: process_message()"]
+    Corr{has correlation_id?}
+    WriteResp["write response to responses/<corr_id>.jsonl"]
     Mark["inbox.mark_processed([ids])"]
     Sleep["sleep(poll_interval)"]
-    Stop["stop"]
+    Stop(["stop"])
 
     Start --> Poll
     Poll --> Read
@@ -175,10 +157,5 @@ graph TD
     Corr -->|no| Mark
     WriteResp --> Mark
     Mark --> Sleep
-    Sleep -->|loop| Poll
-    Sleep -->|Ctrl+C| Stop
-
-    style Start fill:#2563eb,color:#fff
-    style Poll fill:#16a34a,color:#fff
-    style Stop fill:#dc2626,color:#fff
+    Sleep --> Poll
 ```
