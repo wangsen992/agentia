@@ -14,6 +14,7 @@ The relay connects via ws://localhost:<port> from the host.
 """
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -23,27 +24,26 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 log = logging.getLogger("start_agents")
 
 
-IMAGE = "openclaw-harness"
+IMAGE = os.environ.get("AGENTIA_IMAGE", "agentia")
 DEFAULT_BASE_PORT = 18790
 
 
-def check_image():
+def check_image(image: str) -> bool:
     """Check if the gateway image exists."""
     result = subprocess.run(
-        ["docker", "images", "-q", IMAGE],
+        ["docker", "images", "-q", image],
         capture_output=True, text=True
     )
     if not result.stdout.strip():
-        log.error(f"Image '{IMAGE}' not found.")
-        log.error(f"Build it first: docker build -t {IMAGE} .")
+        log.error(f"Image '{image}' not found.")
+        log.error(f"Build it first: docker build -t {image} .")
         return False
     return True
 
 
-def start_agent(index: int, port: int) -> bool:
+def start_agent(image: str, index: int, port: int) -> bool:
     """Start a single agent container."""
     container_name = f"agent-{index}"
-    ws_url = f"ws://localhost:{port}"
 
     # Check if already running
     result = subprocess.run(
@@ -65,7 +65,7 @@ def start_agent(index: int, port: int) -> bool:
         "docker", "run", "-d",
         "--name", container_name,
         "-p", f"{port}:18789",
-        IMAGE,
+        image,
         "gateway"
     ]
 
@@ -95,6 +95,8 @@ def wait_for_gateway(port: int, timeout: float = 30) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Start multiple OpenClaw agent containers")
+    parser.add_argument("--image", "-i", type=str, default=IMAGE,
+                        help=f"Docker image to use (default: {IMAGE})")
     parser.add_argument("--count", "-n", type=int, default=2,
                         help="Number of agents to start (default: 2)")
     parser.add_argument("--base-port", "-p", type=int, default=DEFAULT_BASE_PORT,
@@ -103,15 +105,17 @@ def main():
                         help="Wait for all gateways to be ready")
     args = parser.parse_args()
 
-    if not check_image():
+    image = args.image
+    if not check_image(image):
         sys.exit(1)
 
     log.info(f"Starting {args.count} agents on ports {args.base_port}–{args.base_port + args.count - 1}...")
+    log.info(f"Image: {image}")
     log.info("")
 
     for i in range(args.count):
         port = args.base_port + i
-        ok = start_agent(i, port)
+        ok = start_agent(image, i, port)
         if not ok:
             log.error(f"Failed to start agent-{i}")
             continue
