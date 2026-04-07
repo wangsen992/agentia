@@ -57,30 +57,33 @@ class OpenClawAdapter(AgentAdapter):
     # ─── Lifecycle ─────────────────────────────────────────────────────────────
 
     def setup(self) -> None:
-        """Provision identity, patch config, start gateway, approve pairings."""
+        """Start gateway with --auth none --bind loopback.
+
+        Uses --auth none for simplicity (gateway is loopback-only, not exposed).
+        For production use with network exposure, use --auth token instead.
+        """
         if self._logger:
             self._logger.lifecycle_start("setup")
 
         cfg_path = "/root/.openclaw/openclaw.json"
 
-        # Patch config: lan bind + token auth
+        # Patch config: loopback bind + no auth (simple loopback gateway)
         cfg = json.load(open(cfg_path))
-        cfg["gateway"]["bind"] = "lan"
-        cfg["gateway"]["auth"]["mode"] = "token"
-        cfg["gateway"]["auth"]["token"] = FIXED_TOKEN
+        cfg["gateway"]["bind"] = "loopback"
+        cfg["gateway"]["auth"]["mode"] = "none"
         cfg["gateway"].setdefault("controlUi", {})[
             "dangerouslyAllowHostHeaderOriginFallback"
         ] = True
         json.dump(cfg, open(cfg_path, "w"), indent=2)
-        print(f"[OpenClawAdapter] Config patched: lan bind + token auth")
+        print(f"[OpenClawAdapter] Config patched: loopback bind + no auth")
 
         # Start gateway in background
         self._gateway_proc = subprocess.Popen(
             [
                 "openclaw", "gateway", "run",
                 "--port", str(GATEWAY_PORT),
-                "--bind", "lan",
-                "--token", FIXED_TOKEN,
+                "--bind", "loopback",
+                "--auth", "none",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -93,9 +96,6 @@ class OpenClawAdapter(AgentAdapter):
 
         # Wait for gateway to be ready
         self._wait_gateway_ready()
-
-        # Approve any pending pairings
-        self._approve_pairings()
 
         if self._logger:
             self._logger.lifecycle_end("setup")

@@ -23,7 +23,7 @@
 #   docker run agentia single "Hello world"     # single prompt
 #   docker run agentia multi --prompt "..."     # multi-turn automated
 #   docker run -it agentia gateway               # gateway-only (debugging)
-#   docker run -it agentia poller --agent-id foo  # inbox poller (long-running)
+#   docker run -d agentia inbox --agent-id foo   # inbox poller (long-running daemon)
 #
 
 set -e
@@ -47,7 +47,7 @@ if [ "$HARNESS" = "list" ]; then
 	echo "  multi         Multi-turn automated — spawns subagents, waits, synthesizes"
 	echo "  single        One-shot — sends one prompt, prints response, exits"
 	echo "  gateway       Gateway-only — starts gateway, keeps container alive"
-	echo "  poller        Inbox polling agent — long-running, processes inbox messages"
+	echo "  inbox         Inbox poller — long-running daemon, processes inbox messages"
 	echo "  list          Show this list"
 	echo "  help          Show full help documentation"
 	echo ""
@@ -115,15 +115,14 @@ single)
 	;;
 
 gateway)
-	echo "=== Starting GATEWAY-ONLY harness ===" >&2
-	echo "Adapter will call setup() → start gateway, keep alive." >&2
+	echo "=== Starting GATEWAY harness (gateway + poller) ===" >&2
 	echo "---" >&2
-	exec python3 "${RUNNERS_DIR}/gateway_harness.py"
+	exec python3 "${RUNNERS_DIR}/gateway_harness.py" "$@"
 	;;
 
-poller)
-	echo "=== Starting INBOX POLLER ===" >&2
-	exec python3 "${RUNNERS_DIR}/inbox_poller.py" "$@"
+inbox)
+	echo "=== Starting INBOX POLLER harness ===" >&2
+	exec python3 "${RUNNERS_DIR}/inbox_poller_harness.py" "$@"
 	;;
 
 *)

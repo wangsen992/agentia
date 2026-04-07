@@ -2,12 +2,49 @@
 
 **Mission:** Build a living, evolving organization of AI agents that communicate asynchronously, maintain hierarchical structure, and can self-manage through dynamic spawn and prune operations.
 
+---
+
+## Quick Start
+
+```bash
+# Build the image
+cd ~/openclaw_space/projects/agentia
+docker buildx build --load . -t agentia
+
+# Create an agent (default: subprocess poller harness)
+./agentia create analyst my-analyst
+
+# Send a message
+./agentia exec my-analyst "What is 2+2?"
+
+# Or start with gateway harness (persistent gateway mode)
+./agentia create analyst my-analyst --harness gateway
+
+# List running agents
+./agentia ps
+
+# View logs
+./agentia logs my-analyst
+
+# Destroy
+./agentia destroy my-analyst
+```
+
 ## Current Status
 
 **Phase 0 — Core Infrastructure: DONE**
 - SPEC 004: Observability layer (logging, trace, session tracking)
 - SPEC 005: Relay/Inbox architecture (async message passing via JSON Lines)
 - SPEC 006: Orchestration patterns (decision: Moderator first, autonomous deferred)
+
+**What's Working (2026-04-06)**
+- Agent container create/start/stop/destroy lifecycle ✅
+- `agent` harness: subprocess poller via inbox relay ✅
+- `gateway` harness: persistent OpenClaw gateway (--auth none --bind loopback) ✅
+- `agentia exec` — message roundtrip through inbox ✅
+- Host config isolation (no ~/.openclaw/ mount) ✅
+- Per-container OpenClaw config baked into image at build time ✅
+- Registry auto-cleanup on stale containers ✅
 
 **Next: SPEC 007 — End-to-End Integration Test**
 Two agent containers + Moderator + InboxRelay working together.
@@ -110,6 +147,46 @@ Host                  Container A              Container B
 3. Moderator builds history correctly across turns
 4. Transcript complete after N turns
 5. Stop condition respected
+
+---
+
+## Security Model
+
+**Host config isolation is strictly enforced.** The agent container never mounts the host's `~/.openclaw/` directory.
+
+### Why this matters
+OpenClaw writes to `~/.openclaw/` at runtime:
+- Device identity (tokens, credentials)
+- Session history
+- Model configurations
+- Canvas/artifacts
+
+If a container's `/root/.openclaw/` were bind-mounted from the host, container processes would corrupt the host's OpenClaw state.
+
+### How agentia handles it
+1. **At build time:** OpenClaw config is COPY'd into the Docker image (`Dockerfile`)
+2. **At container create:** Image config is extracted and copied to `~/.agentia/containers/{agent_id}/openclaw/`
+3. **At container run:** That **per-container copy** is mounted as a volume into the container
+
+```
+Host                              Container
+~/.agentia/containers/{id}/openclaw/  →  /root/.openclaw/
+         ↑ copied from image at create time
+
+Host ~/.openclaw/  ← NEVER touched
+```
+
+### Volume mounts (all safe)
+| Host path | Container path | Purpose |
+|-----------|---------------|---------|
+| `~/.agentia/inbox/` | `/workspace/inbox` | Relay messages (JSONL) |
+| `~/.agentia/containers/{id}/workspace/` | `/workspace-src` | Per-agent workspace files |
+| `~/.agentia/containers/{id}/openclaw/` | `/root/.openclaw/` | Per-agent OpenClaw config (image copy) |
+
+### What the container cannot do
+- Access host's `~/.openclaw/` — no path to it exists inside the container
+- Modify host files outside `~/.agentia/`
+- Affect other containers' OpenClaw state
 
 ---
 

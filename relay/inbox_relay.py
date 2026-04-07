@@ -96,8 +96,13 @@ class InboxRelay(BaseRelay):
             role=role,
         )
 
-    def connect(self, agent_id: str, **kwargs) -> bool:
-        """Register an agent. Always returns True (no persistent connection needed)."""
+    def connect(self, agent_id: str, ws_url: str = None, token: str = None, **kwargs) -> bool:
+        """
+        Register an agent. Always returns True (no persistent connection needed).
+
+        Signature compatible with Relay.connect() — accepts ws_url and token
+        positionally even though InboxRelay doesn't use them.
+        """
         if agent_id not in self.agents:
             container = kwargs.get("container_name", f"agentia-{agent_id}")
             self.register_agent(agent_id, container)

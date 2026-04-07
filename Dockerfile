@@ -15,10 +15,15 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies for relay/moderator
-RUN pip3 install websockets --break-system-packages
+RUN pip3 install websocket-client websockets requests --break-system-packages
 
 # Install OpenClaw globally
-RUN npm install -g openclaw@latest
+RUN npm install -g openclaw@latest \
+    && npm install -g @tobilu/qmd \
+    && npm install -g @buape/carbon \
+       @larksuiteoapi/node-sdk \
+       @slack/web-api \
+       grammy
 
 # Create directory structure
 RUN mkdir -p /workspace /workspace/inbox /workspace/inbox/responses /root/.openclaw/identity /root/.openclaw/agents/main/agent
@@ -43,9 +48,10 @@ COPY adapters/ /workspace/adapters/
 # Copy workspace templates (for provision tool)
 COPY workspaces/ /workspace/workspaces/
 
-# Copy OpenClaw config (BUILD TIME — not a volume mount)
-COPY containers/config/openclaw.json /root/.openclaw/openclaw.json
-COPY containers/config/auth-profiles.json /root/.openclaw/agents/main/agent/auth-profiles.json
+# Copy sanitized OpenClaw config (no channels, no Discord, no personal API keys)
+# SECURITY: host ~/.openclaw is never mounted; container gets isolated config only.
+COPY containers/config-sanitized/openclaw.json /root/.openclaw/openclaw.json
+COPY containers/config-sanitized/auth-profiles.json /root/.openclaw/agents/main/agent/auth-profiles.json
 
 WORKDIR /workspace
 
