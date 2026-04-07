@@ -2,9 +2,9 @@
 """
 ExecRelay — uses docker exec to drive agent containers.
 
-Simpler than WebSocket auth: uses `docker exec` to run `openclaw agent`
-inside each agent container, where it connects to the local gateway
-without needing external auth.
+Implements BaseRelay for synchronous request/response via docker exec.
+Each agent runs in its own container with a local gateway.
+The relay uses `docker exec` to run `openclaw agent` inside each container.
 
 Pros:
 - No auth/pairing complexity
@@ -17,11 +17,12 @@ Cons:
 """
 
 import subprocess
-import json
 import time
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
+
+from .base import BaseRelay, RelayMessage
 
 logger = logging.getLogger("exec_relay")
 
@@ -36,44 +37,55 @@ class AgentConnection:
     session_id: Optional[str] = None
 
 
-class ExecRelay:
+class ExecRelay(BaseRelay):
     """
-    Relay that uses docker exec to send messages to agent containers.
+    BaseRelay implementation using docker exec.
 
     Each agent runs in its own container with a local gateway.
     The relay uses `docker exec` to run `openclaw agent` inside
     each container, connecting to the local gateway without auth.
     """
 
-    def __init__(self):
+    def __init__(self, default_timeout: int = 120):
         self.agents: dict[str, AgentConnection] = {}
+        self._default_timeout = default_timeout
 
-    def register_agent(self, agent_id: str, container_name: str,
-                       name: str = "", role: str = "", system_prompt: str = ""):
+    def connect(
+        self,
+        agent_id: str,
+        container_name: Optional[str] = None,
+        name: str = "",
+        role: str = "",
+        system_prompt: str = "",
+        **kwargs,
+    ) -> bool:
+        """
+        Register an agent connection.
+
+        Args:
+            agent_id: Unique agent identifier
+            container_name: Docker container name (defaults to agentia-{agent_id})
+            name: Display name for the agent
+            role: Agent role description
+            system_prompt: Initial system prompt for the agent
+            **kwargs: Ignored (for compatibility with BaseRelay interface)
+        """
+        if container_name is None:
+            container_name = f"agentia-{agent_id}"
         conn = AgentConnection(
             id=agent_id,
             container_name=container_name,
             name=name or agent_id,
             role=role,
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
         )
         self.agents[agent_id] = conn
         logger.info(f"Registered {agent_id} in container {container_name}")
+        return True
 
-    def _exec_in_container(self, container: str, cmd: list[str], timeout: int = 90) -> dict:
-        """Run a command inside a container."""
-        full_cmd = ["docker", "exec", container] + cmd
-        result = subprocess.run(
-            full_cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
-        return {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "returncode": result.returncode
-        }
+    def disconnect(self, agent_id: str) -> None:
+        """Unregister an agent."""
+        self.agents.pop(agent_id, None)
 
     def setup_agent(self, agent_id: str) -> bool:
         """Send system prompt to establish agent role."""
@@ -82,19 +94,20 @@ class ExecRelay:
             logger.error(f"Unknown agent {agent_id}")
             return False
 
-        # Create a new session for this agent
         conn.session_id = f"mod-{int(time.time())}-{agent_id}"
         logger.info(f"Setting up {agent_id} with session {conn.session_id}")
 
-        # Send system prompt as first message
         result = self._exec_in_container(
             conn.container_name,
             [
-                "openclaw", "agent",
-                "--session-id", conn.session_id,
-                "--message", conn.system_prompt
+                "openclaw",
+                "agent",
+                "--session-id",
+                conn.session_id,
+                "--message",
+                conn.system_prompt,
             ],
-            timeout=120
+            timeout=self._default_timeout,
         )
 
         if result["returncode"] == 0:
@@ -104,48 +117,139 @@ class ExecRelay:
             logger.error(f"  {agent_id} setup failed: {result['stderr'][:200]}")
             return False
 
-    def send(self, agent_id: str, message: str) -> Optional[str]:
-        """Send a message to an agent and return the response.
+    def _exec_in_container(
+        self, container: str, cmd: list[str], timeout: int = 90
+    ) -> dict:
+        """Run a command inside a container."""
+        full_cmd = ["docker", "exec", container] + cmd
+        try:
+            result = subprocess.run(
+                full_cmd, capture_output=True, text=True, timeout=timeout
+            )
+            return {
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+            }
+        except subprocess.TimeoutExpired:
+            return {"stdout": "", "stderr": "timeout", "returncode": -1}
+        except Exception as e:
+            return {"stdout": "", "stderr": str(e), "returncode": -1}
 
-        Accepts str or dict. If dict, serialized as JSON.
+    def send(self, message: RelayMessage) -> Optional[str]:
         """
-        if isinstance(message, dict):
-            import json
-            message = json.dumps(message)
-        """Send a message to an agent and return the response."""
-        conn = self.agents.get(agent_id)
+        Send a message to an agent and wait for response.
+
+        Args:
+            message: RelayMessage with to_agent and content
+
+        Returns:
+            Response text, or None on failure.
+        """
+        if not message.to_agent:
+            logger.error("send() requires message.to_agent")
+            return None
+
+        conn = self.agents.get(message.to_agent)
         if not conn:
-            logger.error(f"Unknown agent {agent_id}")
+            logger.error(f"Unknown agent {message.to_agent}")
             return None
 
         if not conn.session_id:
-            logger.error(f"Agent {agent_id} not set up (no session)")
+            logger.error(f"Agent {message.to_agent} not set up (no session)")
             return None
 
         result = self._exec_in_container(
             conn.container_name,
             [
-                "openclaw", "agent",
-                "--session-id", conn.session_id,
-                "--message", message
+                "openclaw",
+                "agent",
+                "--session-id",
+                conn.session_id,
+                "--message",
+                message.content,
             ],
-            timeout=120
+            timeout=self._default_timeout,
         )
 
         if result["returncode"] == 0:
             return result["stdout"].strip()
         else:
-            # Fall back to embedded mode (gateway unreachable)
-            logger.warning(f"  {agent_id} returned non-zero: {result['stderr'][:100]}")
+            logger.warning(
+                f"  {message.to_agent} returned non-zero: {result['stderr'][:100]}"
+            )
             return result["stdout"].strip()
 
-    def close(self):
-        """Clean up (no-op for exec relay)."""
-        pass
+    def send_async(self, message: RelayMessage) -> bool:
+        """
+        Fire-and-forget: send without waiting for response.
+
+        For ExecRelay, docker exec is synchronous so we just don't wait.
+        """
+        if message.to_agent not in self.agents:
+            return False
+
+        conn = self.agents[message.to_agent]
+        if not conn.session_id:
+            logger.error(f"Agent {message.to_agent} not set up (no session)")
+            return False
+
+        cmd = [
+            "openclaw",
+            "agent",
+            "--session-id",
+            conn.session_id,
+            "--message",
+            message.content,
+        ]
+
+        try:
+            subprocess.Popen(
+                ["docker", "exec", conn.container_name] + cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to exec in {message.to_agent}: {e}")
+            return False
+
+    def broadcast(self, message: RelayMessage) -> dict[str, bool]:
+        """Send a message to all agents in message.to_agents. Returns agent_id -> success."""
+        results = {}
+        for agent_id in message.to_agents or []:
+            conn = self.agents.get(agent_id)
+            if not conn or not conn.session_id:
+                results[agent_id] = False
+                continue
+            result = self._exec_in_container(
+                conn.container_name,
+                [
+                    "openclaw",
+                    "agent",
+                    "--session-id",
+                    conn.session_id,
+                    "--message",
+                    message.content,
+                ],
+                timeout=self._default_timeout,
+            )
+            results[agent_id] = result["returncode"] == 0
+        return results
+
+    def is_connected(self, agent_id: str) -> bool:
+        """Check if an agent is registered."""
+        return agent_id in self.agents
 
     def close_all(self) -> None:
         """Clean up all connections."""
-        self.close()
+        self.agents.clear()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close_all()
 
 
 if __name__ == "__main__":

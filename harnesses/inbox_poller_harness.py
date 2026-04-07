@@ -24,7 +24,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from observability import SessionLogger
-from relay.inbox import Inbox, Message
+from relay.inbox import Inbox
+from relay.base import RelayMessage
+
+import constants
 
 
 class SubprocessPoller:
@@ -33,8 +36,14 @@ class SubprocessPoller:
     No gateway needed — each call is a fresh agent invocation.
     """
 
-    def __init__(self, agent_id: str, base_dir: str, responses_dir: str,
-                 poll_interval: float, gateway_token: str):
+    def __init__(
+        self,
+        agent_id: str,
+        base_dir: str,
+        responses_dir: str,
+        poll_interval: float,
+        gateway_token: str,
+    ):
         self.agent_id = agent_id
         self.base_dir = base_dir
         self.responses_dir = responses_dir
@@ -46,7 +55,7 @@ class SubprocessPoller:
 
         Path(responses_dir).mkdir(parents=True, exist_ok=True)
 
-    def process_message(self, message: Message) -> str:
+    def process_message(self, message: RelayMessage) -> str:
         """Call openclaw agent --message as subprocess, return response."""
         session_id = f"{self._session_prefix}-{uuid.uuid4().hex[:8]}"
         env = {
@@ -57,9 +66,12 @@ class SubprocessPoller:
         }
 
         cmd = [
-            "openclaw", "agent",
-            "--session-id", session_id,
-            "--message", message.content,
+            "openclaw",
+            "agent",
+            "--session-id",
+            session_id,
+            "--message",
+            message.content,
         ]
 
         try:
@@ -103,21 +115,34 @@ class SubprocessPoller:
             return 0
         processed_ids = []
         for msg in messages:
-            print(f"[{self.agent_id}] Processing msg from {msg.from_agent}: {msg.content[:50]}...", flush=True)
+            print(
+                f"[{self.agent_id}] Processing msg from {msg.from_agent}: {msg.content[:50]}...",
+                flush=True,
+            )
             try:
                 response_content = self.process_message(msg)
-                print(f"[{self.agent_id}] Response: {response_content[:80]}...", flush=True)
+                print(
+                    f"[{self.agent_id}] Response: {response_content[:80]}...",
+                    flush=True,
+                )
                 if msg.correlation_id:
                     self.write_response(msg.correlation_id, response_content)
                 processed_ids.append(msg.id)
             except Exception as e:
-                print(f"[{self.agent_id}] Error processing message {msg.id[:8]}: {e}", flush=True)
+                msg_id_str = (msg.id or "unknown")[:8]
+                print(
+                    f"[{self.agent_id}] Error processing message {msg_id_str}: {e}",
+                    flush=True,
+                )
         if processed_ids:
             self.inbox.mark_processed(processed_ids)
         return len(processed_ids)
 
     def run(self):
-        print(f"[{self.agent_id}] Subprocess poller started, polling every {self.poll_interval}s", flush=True)
+        print(
+            f"[{self.agent_id}] Subprocess poller started, polling every {self.poll_interval}s",
+            flush=True,
+        )
         try:
             while self.running:
                 self.poll_once()
@@ -132,7 +157,9 @@ def main():
     parser.add_argument("--agent-id", required=True)
     parser.add_argument("--base-dir", default="/workspace/inbox")
     parser.add_argument("--responses-dir", default="/workspace/inbox/responses")
-    parser.add_argument("--poll-interval", type=float, default=2.0)
+    parser.add_argument(
+        "--poll-interval", type=float, default=constants.POLL_INTERVAL_DEFAULT
+    )
     args = parser.parse_args()
 
     do_log = os.environ.get("LOG", "0") == "1"
@@ -142,9 +169,12 @@ def main():
         harness_logger = SessionLogger("openclaw", session_id=session_id)
         harness_logger.__enter__()
 
-    print(f"=== Starting AGENT HARNESS for '{args.agent_id}' (subprocess mode) ===", flush=True)
+    print(
+        f"=== Starting AGENT HARNESS for '{args.agent_id}' (subprocess mode) ===",
+        flush=True,
+    )
 
-    gateway_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", "multi-agent-relay-token")
+    gateway_token = os.environ.get("OPENCLAW_GATEWAY_TOKEN", constants.GATEWAY_TOKEN)
 
     poller = SubprocessPoller(
         agent_id=args.agent_id,

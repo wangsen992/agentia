@@ -97,32 +97,32 @@ interactive)
 	echo "=== Starting INTERACTIVE harness ===" >&2
 	echo "Adapter will call setup() → start gateway, then run REPL." >&2
 	echo "---" >&2
-	exec python3 "${RUNNERS_DIR}/interactive_harness.py"
+	exec python3 -m runners.interactive_harness
 	;;
 
 multi)
 	echo "=== Starting MULTI-TURN harness ===" >&2
 	echo "Adapter will call setup() → start gateway, then run workflow." >&2
 	echo "---" >&2
-	exec python3 "${RUNNERS_DIR}/multi_turn_harness.py" "$@"
+	exec python3 -m runners.multi_turn_harness "$@"
 	;;
 
 single)
 	echo "=== Starting SINGLE-SHOT harness ===" >&2
 	echo "Adapter will call setup() → start gateway, then run one prompt." >&2
 	echo "---" >&2
-	exec python3 "${RUNNERS_DIR}/single_harness.py" "$@"
+	exec python3 -m runners.single_harness "$@"
 	;;
 
 gateway)
 	echo "=== Starting GATEWAY harness (gateway + poller) ===" >&2
 	echo "---" >&2
-	exec python3 "${RUNNERS_DIR}/gateway_harness.py" "$@"
+	exec python3 -m runners.gateway_harness "$@"
 	;;
 
 inbox)
 	echo "=== Starting INBOX POLLER harness ===" >&2
-	exec python3 "${RUNNERS_DIR}/inbox_poller_harness.py" "$@"
+	exec python3 -m runners.inbox_poller_harness "$@"
 	;;
 
 *)

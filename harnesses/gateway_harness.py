@@ -33,19 +33,23 @@ import signal
 import sys
 import threading
 import time
+import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from agents.adapters import get_adapter
 from observability import SessionLogger
+from relay.inbox import Inbox
+from relay.base import RelayMessage
+
+import constants
 
 
 # ─── Gateway Control Server ───────────────────────────────────────────────────
 
-GWCTL_PORT = 18790  # loopback-only, no security exposure inside container
 RESTART_FLAG = "/workspace/.gateway-restart-requested"
-RESTARTING = threading.Event()  # set while a restart is in-flight; causes 503 on new requests
+RESTARTING = threading.Event()
 
 
 class GatewayCtlHandler(BaseHTTPRequestHandler):
@@ -63,7 +67,6 @@ class GatewayCtlHandler(BaseHTTPRequestHandler):
             return
 
     def _do_status(self):
-        """Return current state: 'ready' (200) or 'restarting' (503)."""
         status = "restarting" if RESTARTING.is_set() else "ready"
         code = 503 if RESTARTING.is_set() else 200
         self.send_response(code)
@@ -72,7 +75,6 @@ class GatewayCtlHandler(BaseHTTPRequestHandler):
         self.wfile.write(status.encode())
 
     def _do_restart(self):
-        """Initiate a gateway restart, or 503 if one is already running."""
         if RESTARTING.is_set():
             self.send_response(503)
             self.send_header("Content-Type", "text/plain")
@@ -82,7 +84,10 @@ class GatewayCtlHandler(BaseHTTPRequestHandler):
 
         RESTARTING.set()
         Path(RESTART_FLAG).touch()
-        print(f"[gwctl] Restart requested via HTTP from {self.client_address[0]}", flush=True)
+        print(
+            f"[gwctl] Restart requested via HTTP from {self.client_address[0]}",
+            flush=True,
+        )
 
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
@@ -90,43 +95,53 @@ class GatewayCtlHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"restarting\n")
 
     def log_message(self, format, *args):
-        # Silence default HTTP logging noise
         pass
 
 
 def start_gateway_ctl_server() -> threading.Thread:
     """Start the HTTP control server on loopback-only port."""
-    server = HTTPServer(("127.0.0.1", GWCTL_PORT), GatewayCtlHandler)
+    server = HTTPServer(("127.0.0.1", constants.GATEWAY_CTL_PORT), GatewayCtlHandler)
     t = threading.Thread(
         target=server.serve_forever,
         daemon=True,
         name="gwctl-server",
     )
     t.start()
-    print(f"[gwctl] Control server listening on 127.0.0.1:{GWCTL_PORT}")
+    print(f"[gwctl] Control server listening on 127.0.0.1:{constants.GATEWAY_CTL_PORT}")
     return t
 
 
 # ─── Inbox Poller ─────────────────────────────────────────────────────────────
 
-class InboxPoller:
-    """Minimal inbox poller — runs alongside the gateway."""
 
-    def __init__(self, agent_id: str, poll_interval: float = 2.0):
+class InboxPoller:
+    """Inbox poller that uses relay.inbox.Inbox for message handling."""
+
+    def __init__(
+        self,
+        agent_id: str,
+        poll_interval: float | None = None,
+        inbox_dir: str = "/workspace/inbox",
+    ):
         self.agent_id = agent_id
-        self.poll_interval = poll_interval
+        self.poll_interval = (
+            poll_interval
+            if poll_interval is not None
+            else constants.POLL_INTERVAL_DEFAULT
+        )
+        self.inbox_dir = inbox_dir
+        self.inbox = Inbox(agent_id=agent_id, base_dir=inbox_dir)
         self.running = False
         self._thread = None
 
-    def process_message(self, message: dict) -> str:
+    def process_message(self, message: RelayMessage) -> str:
         """Process a single message via OpenClaw agent subprocess."""
         from agents.adapters import get_adapter
-        import uuid, os, subprocess
 
         session_id = f"agent-{self.agent_id}-{uuid.uuid4().hex[:8]}"
-        adapter = get_adapter(timeout=120)
+        adapter = get_adapter(timeout=constants.AGENT_TIMEOUT_DEFAULT)
         adapter.start(session_id=session_id)
-        response = adapter.send(message.get("content", ""))
+        response = adapter.send(message.content)
 
         if response.returncode == 0:
             return response.stdout.strip()
@@ -136,8 +151,8 @@ class InboxPoller:
         """Write response to the responses directory."""
         if not correlation_id:
             return
-        resp_dir = Path("/workspace/inbox/responses")
-        resp_dir.mkdir(exist_ok=True)
+        resp_dir = Path(self.inbox_dir) / "responses"
+        resp_dir.mkdir(parents=True, exist_ok=True)
         resp_path = resp_dir / f"{correlation_id}.jsonl"
         entry = {
             "correlation_id": correlation_id,
@@ -154,47 +169,27 @@ class InboxPoller:
 
     def poll_once(self) -> int:
         """Read all pending inbox messages and process them."""
-        inbox_file = Path("/workspace/inbox") / f"{self.agent_id}.jsonl"
-        if not inbox_file.exists():
-            return 0
-
-        messages = []
-        try:
-            with open(inbox_file) as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            messages.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            pass
-        except Exception as e:
-            print(f"[{self.agent_id}] Inbox read error: {e}", flush=True)
-            return 0
-
+        messages = self.inbox.read_all()
         if not messages:
             return 0
 
         processed_ids = []
         for msg in messages:
-            msg_id = msg.get("id", "")
-            print(f"[{self.agent_id}] Processing: {msg.get('content', '')[:50]}...", flush=True)
+            print(f"[{self.agent_id}] Processing: {msg.content[:50]}...", flush=True)
             try:
                 response = self.process_message(msg)
                 print(f"[{self.agent_id}] Response: {response[:80]}...", flush=True)
-                corr_id = msg.get("correlation_id")
-                if corr_id:
-                    self.write_response(corr_id, response)
-                if msg_id:
-                    processed_ids.append(msg_id)
+                if msg.correlation_id:
+                    self.write_response(msg.correlation_id, response)
+                processed_ids.append(msg.id)
             except Exception as e:
-                print(f"[{self.agent_id}] Error processing {msg_id[:8]}: {e}", flush=True)
+                msg_id_str = (msg.id or "unknown")[:8]
+                print(
+                    f"[{self.agent_id}] Error processing {msg_id_str}: {e}", flush=True
+                )
 
         if processed_ids:
-            remaining = [m for m in messages if (m.get("id", "") or "") not in processed_ids]
-            with open(inbox_file, "w") as f:
-                for m in remaining:
-                    f.write(json.dumps(m) + "\n")
+            self.inbox.mark_processed(processed_ids)
 
         return len(processed_ids)
 
@@ -216,11 +211,16 @@ class InboxPoller:
 
 # ─── Main Harness ──────────────────────────────────────────────────────────────
 
+
 def main():
     import argparse
+    import uuid
+
     parser = argparse.ArgumentParser(description="Gateway Harness")
     parser.add_argument("--agent-id", default="agent-001")
-    parser.add_argument("--poll-interval", type=float, default=2.0)
+    parser.add_argument(
+        "--poll-interval", type=float, default=constants.POLL_INTERVAL_DEFAULT
+    )
     args = parser.parse_args()
 
     do_log = os.environ.get("LOG", "0") == "1"
@@ -237,36 +237,30 @@ def main():
 
     print("=== Starting GATEWAY HARNESS (gateway + poller) ===", flush=True)
 
-    # Start the control HTTP server (loopback-only, port 18790)
     ctl_thread = start_gateway_ctl_server()
 
-    # Start the gateway via adapter
     adapter = get_adapter(logger=harness_logger)
     adapter.setup()
     print("Gateway running.", flush=True)
 
-    # Start the inbox poller alongside
     poller = InboxPoller(agent_id=agent_id, poll_interval=poll_interval)
     poller.start()
     print(f"Poller running (interval={poll_interval}s).", flush=True)
 
-    # ── Main loop: poll + restart check ────────────────────────────────────────
     restart_count = 0
 
     def do_gateway_restart():
-        """Perform a graceful gateway restart."""
         nonlocal adapter, poller, restart_count
         restart_count += 1
         print(f"\n[!!] Gateway restart #{restart_count} requested", flush=True)
         print("[!!] Stopping poller...", flush=True)
         poller.stop()
-        if hasattr(poller, "_thread") and poller._thread.is_alive():
+        if poller._thread is not None and poller._thread.is_alive():
             poller._thread.join(timeout=5)
 
         print("[!!] Tearing down gateway...", flush=True)
         adapter.teardown()
 
-        # Small delay before re-initializing
         time.sleep(1)
 
         print("[!!] Re-initializing adapter...", flush=True)
@@ -278,7 +272,6 @@ def main():
         poller = InboxPoller(agent_id=agent_id, poll_interval=poll_interval)
         poller.start()
 
-        # Clear the restart flag and lock
         if Path(RESTART_FLAG).exists():
             Path(RESTART_FLAG).unlink()
         RESTARTING.clear()
@@ -295,10 +288,8 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
 
-    # Main poll loop with restart-flag inspection
     try:
         while True:
-            # Check restart flag (set by HTTP handler)
             if Path(RESTART_FLAG).exists():
                 do_gateway_restart()
             time.sleep(poll_interval)

@@ -406,47 +406,32 @@ class DockerAdapter(AgentAdapter):
         print(f"[agentia] Destroyed {agent_id}")
 
     def ask_agent(self, agent_id: str, message: str) -> str:
-        """Send a message via inbox relay and wait for response."""
-        import sys
+        """Send a message via InboxRelay and wait for response."""
         sys.path.insert(0, str(Path(__file__).parent))
+        from relay.inbox_relay import InboxRelay
+        from relay.base import RelayMessage
 
         inbox_dir = self.inbox_dir
         inbox_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write message to inbox
-        msg_id = uuid.uuid4().hex
-        corr_id = uuid.uuid4().hex
-        inbox_file = inbox_dir / f"{agent_id}.jsonl"
+        relay = InboxRelay(
+            base_dir=str(inbox_dir),
+            responses_dir=str(inbox_dir / "responses"),
+        )
+        relay.connect(agent_id)
 
-        import json as _json
-        msg_entry = _json.dumps({
-            "id": msg_id,
-            "from_agent": "cli",
-            "to_agent": agent_id,
-            "content": message,
-            "correlation_id": corr_id,
-            "timestamp": time.time(),
-        }) + "\n"
+        corr_id = str(uuid.uuid4())
+        msg = RelayMessage(
+            to_agent=agent_id,
+            content=message,
+            from_agent="cli",
+            correlation_id=corr_id,
+        )
 
-        with open(inbox_file, "a") as f:
-            f.write(msg_entry)
-
-        # Wait for response
-        resp_file = inbox_dir / "responses" / f"{corr_id}.jsonl"
-        resp_dir = inbox_dir / "responses"
-        resp_dir.mkdir(exist_ok=True)
-
-        timeout = 120
-        start = time.time()
-        while time.time() - start < timeout:
-            if resp_file.exists():
-                with open(resp_file) as f:
-                    resp_data = _json.loads(f.read().strip())
-                resp_file.unlink()  # clean up
-                return resp_data.get("content", "")
-            time.sleep(0.5)
-
-        raise TimeoutError(f"No response from {agent_id} within {timeout}s")
+        response = relay.send(msg, timeout=120.0)
+        if response is None:
+            raise TimeoutError(f"No response from {agent_id} within 120s")
+        return response
 
     def container_status(self, agent_id: str) -> str:
         """Get container status. Syncs registry if Docker state diverges from metadata."""

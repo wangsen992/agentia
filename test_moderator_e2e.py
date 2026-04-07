@@ -51,14 +51,14 @@ def main():
     )
 
     # ── Register agents (container names from docker) ───────────────────────
-    relay.register_agent(
-        agent_id="analyst-001",
+    relay.connect(
+        "analyst-001",
         container_name="agentia-analyst-001",
         name="The Analyst",
         role="research analyst",
     )
-    relay.register_agent(
-        agent_id="critic-001",
+    relay.connect(
+        "critic-001",
         container_name="agentia-critic-001",
         name="The Critic",
         role="critical reviewer",
@@ -125,19 +125,23 @@ def main():
     # Save transcript to file
     output_path = Path(__file__).parent / "transcript_e2e.json"
     with open(output_path, "w") as f:
-        json.dump({
-            "topic": topic,
-            "turns": [
-                {
-                    "turn": r.turn,
-                    "agent_id": r.agent_id,
-                    "agent_name": r.agent_name,
-                    "prompt": r.prompt,
-                    "response": r.response,
-                }
-                for r in moderator.turns
-            ],
-        }, f, indent=2)
+        json.dump(
+            {
+                "topic": topic,
+                "turns": [
+                    {
+                        "turn": r.turn,
+                        "agent_id": r.agent_id,
+                        "agent_name": r.agent_name,
+                        "prompt": r.prompt,
+                        "response": r.response,
+                    }
+                    for r in moderator.turns
+                ],
+            },
+            f,
+            indent=2,
+        )
     print(f"\nTranscript saved to: {output_path}")
 
 

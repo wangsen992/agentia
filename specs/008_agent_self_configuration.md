@@ -118,13 +118,15 @@ Without step 3, even correct config wouldn't be active.
 
 ## Key Endpoints
 
-### Gateway Restart (inside container)
+These endpoints are provided by **AgentServer** (see SPEC 005):
+
+### Gateway Restart (via AgentServer)
 ```
 POST http://127.0.0.1:18790/restart
 Response: "restarting"
 ```
 
-### Gateway Status (inside container)
+### Gateway Status (via AgentServer)
 ```
 GET http://127.0.0.1:18790/status
 Response: "ready" | "not_ready"
@@ -169,7 +171,7 @@ The fix: bake packages into Dockerfile. Agent does runtime config + verify.
 
 ## Related Specs
 
-- [SPEC-007_agent_provision.md](./007_agent_provision.md) — Agent provisioning + registry
+- [SPEC-005_relay_inbox.md](./005_relay_inbox.md) — AgentServer architecture (gateway_harness absorbed into AgentServer)
 - [SPEC-006_orchestration_patterns.md](./006_orchestration_patterns.md) — Orchestration + delegation patterns
 
 ---

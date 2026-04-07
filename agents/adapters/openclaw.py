@@ -19,11 +19,8 @@ import time
 import uuid
 from typing import Optional
 
+import constants
 from .base import AgentAdapter, AgentResponse
-
-
-FIXED_TOKEN = "multi-agent-relay-token"
-GATEWAY_PORT = 18789
 
 
 class OpenClawAdapter(AgentAdapter):
@@ -80,10 +77,15 @@ class OpenClawAdapter(AgentAdapter):
         # Start gateway in background
         self._gateway_proc = subprocess.Popen(
             [
-                "openclaw", "gateway", "run",
-                "--port", str(GATEWAY_PORT),
-                "--bind", "loopback",
-                "--auth", "none",
+                "openclaw",
+                "gateway",
+                "run",
+                "--port",
+                str(constants.GATEWAY_PORT),
+                "--bind",
+                "loopback",
+                "--auth",
+                "none",
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -92,7 +94,11 @@ class OpenClawAdapter(AgentAdapter):
         print(f"[OpenClawAdapter] Gateway started (PID {self._gateway_proc.pid})")
 
         if self._logger:
-            self._logger.log("gateway_start", gateway_pid=self._gateway_proc.pid, port=GATEWAY_PORT)
+            self._logger.log(
+                "gateway_start",
+                gateway_pid=self._gateway_proc.pid,
+                port=constants.GATEWAY_PORT,
+            )
 
         # Wait for gateway to be ready
         self._wait_gateway_ready()
@@ -105,17 +111,25 @@ class OpenClawAdapter(AgentAdapter):
         for i in range(timeout):
             time.sleep(1)
             r = subprocess.run(
-                ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-                 f"http://127.0.0.1:{GATEWAY_PORT}/"],
-                capture_output=True, text=True
+                [
+                    "curl",
+                    "-s",
+                    "-o",
+                    "/dev/null",
+                    "-w",
+                    "%{http_code}",
+                    f"http://127.0.0.1:{constants.GATEWAY_PORT}/",
+                ],
+                capture_output=True,
+                text=True,
             )
             if r.stdout.strip() == "200":
-                print(f"[OpenClawAdapter] Gateway ready after {i+1}s")
+                print(f"[OpenClawAdapter] Gateway ready after {i + 1}s")
                 if self._logger:
-                    self._logger.log("gateway_ready", wait_seconds=i+1)
+                    self._logger.log("gateway_ready", wait_seconds=i + 1)
                 return True
             if i >= 5:
-                print(f"[OpenClawAdapter] Waiting... ({i+1}s)", flush=True)
+                print(f"[OpenClawAdapter] Waiting... ({i + 1}s)", flush=True)
         print("[OpenClawAdapter] Gateway failed to start")
         if self._logger:
             self._logger.log("gateway_failed")
@@ -125,8 +139,7 @@ class OpenClawAdapter(AgentAdapter):
     def _approve_pairings(self) -> None:
         """Approve any pending device pairings."""
         r = subprocess.run(
-            ["openclaw", "devices", "list", "--json"],
-            capture_output=True, text=True
+            ["openclaw", "devices", "list", "--json"], capture_output=True, text=True
         )
         if r.returncode == 0:
             try:
@@ -138,7 +151,7 @@ class OpenClawAdapter(AgentAdapter):
                         if req_id:
                             subprocess.run(
                                 ["openclaw", "devices", "approve", req_id],
-                                capture_output=True
+                                capture_output=True,
                             )
                             print(f"[OpenClawAdapter] Auto-approved: {req_id[:20]}...")
                             if self._logger:
@@ -189,9 +202,12 @@ class OpenClawAdapter(AgentAdapter):
             send_start = time.perf_counter()
 
         cmd = [
-            "openclaw", "agent",
-            "--session-id", self.session_id,
-            "--message", message
+            "openclaw",
+            "agent",
+            "--session-id",
+            self.session_id,
+            "--message",
+            message,
         ]
 
         env = os.environ.copy()
@@ -199,17 +215,11 @@ class OpenClawAdapter(AgentAdapter):
             env["OPENCLAW_WORKSPACE"] = self._workspace
 
         result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=self._timeout,
-            env=env
+            cmd, capture_output=True, text=True, timeout=self._timeout, env=env
         )
 
         response = AgentResponse(
-            stdout=result.stdout,
-            stderr=result.stderr,
-            returncode=result.returncode
+            stdout=result.stdout, stderr=result.stderr, returncode=result.returncode
         )
 
         if self._logger:
@@ -255,7 +265,7 @@ class OpenClawAdapter(AgentAdapter):
         session_files = sorted(
             sessions_dir.glob(f"{sid}*.jsonl"),
             key=lambda f: f.stat().st_mtime,
-            reverse=True
+            reverse=True,
         )
 
         if not session_files:

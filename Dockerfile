@@ -41,11 +41,10 @@ COPY observability/ /workspace/observability/
 # Copy relay layer
 COPY relay/ /workspace/relay/
 
-# Copy provision tool and adapters
-COPY provision.py /workspace/provision.py
-COPY adapters/ /workspace/adapters/
+# Copy constants module
+COPY constants.py /workspace/
 
-# Copy workspace templates (for provision tool)
+# Copy workspace templates
 COPY workspaces/ /workspace/workspaces/
 
 # Copy sanitized OpenClaw config (no channels, no Discord, no personal API keys)

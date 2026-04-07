@@ -99,3 +99,28 @@ Do NOT design ahead of these. Wait for real pain:
 - Hybrid: moderator sets up → board takes over
 
 > "Once you have that running on real tasks, the places where it feels wrong will tell you exactly which autonomous features are actually worth adding."
+
+---
+
+## Architecture Context
+
+Moderator uses **BaseRelay** for multi-agent coordination. The underlying transport has been refactored (see SPEC 005):
+
+```
+Moderator
+    ↓
+BaseRelay (unchanged interface to moderator)
+    ↓
+HostContainerBackend (transport to agent side)
+    ↓
+AgentServer (HTTP/WebSocket, owns inbox pattern)
+    ↓
+AgentAdapter → Agent process
+```
+
+The moderator itself is unaffected by this refactor — it still calls `relay.send()` and `relay.broadcast()` with `RelayMessage` objects.
+
+## Related Specs
+
+- [SPEC-005_relay_inbox.md](./005_relay_inbox.md) — AgentServer architecture
+- [SPEC-008_agent_self_configuration.md](./008_agent_self_configuration.md) — Agent self-configuration with verify loop

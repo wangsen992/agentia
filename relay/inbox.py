@@ -6,51 +6,15 @@ Messages are appended as received. Agent reads and processes them.
 
 Usage:
     inbox = Inbox(agent_id="agent-b", base_dir="/workspace/inbox")
-    inbox.append(Message(from_agent="agent-a", content="hello"))
-    messages = inbox.read_all()  # returns and marks as read
+    inbox.append(RelayMessage(from_agent="agent-a", to_agent="agent-b", content="hello"))
+    messages = inbox.read_all()  # returns list[RelayMessage]
     inbox.mark_processed(message_ids)  # optional cleanup
 """
 
-import json
-import os
-import uuid
-from dataclasses import dataclass, asdict
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-
-@dataclass
-class Message:
-    """A message in the inbox."""
-    id: str
-    from_agent: str
-    to_agent: str
-    content: str
-    timestamp: float
-    correlation_id: Optional[str] = None
-    reply_to: Optional[str] = None
-
-    @classmethod
-    def new(cls, from_agent: str, to_agent: str, content: str,
-            correlation_id: Optional[str] = None, reply_to: Optional[str] = None) -> "Message":
-        return cls(
-            id=str(uuid.uuid4()),
-            from_agent=from_agent,
-            to_agent=to_agent,
-            content=content,
-            timestamp=datetime.now().timestamp(),
-            correlation_id=correlation_id,
-            reply_to=reply_to,
-        )
-
-    def to_json(self) -> str:
-        return json.dumps(asdict(self))
-
-    @classmethod
-    def from_json(cls, line: str) -> "Message":
-        data = json.loads(line)
-        return cls(**data)
+from .base import RelayMessage
 
 
 class Inbox:
@@ -66,19 +30,20 @@ class Inbox:
         self.path = Path(base_dir) / f"{agent_id}.jsonl"
         self._processed_marker = Path(base_dir) / f".{agent_id}.processed"
 
-        # Ensure directory exists
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def append(self, message: Message) -> bool:
+    def append(self, message: RelayMessage) -> bool:
         """Append a message to the inbox file. Returns True on success."""
         try:
+            message.ensure_id()
+            message.ensure_timestamp()
             with open(self.path, "a") as f:
                 f.write(message.to_json() + "\n")
             return True
-        except Exception as e:
+        except Exception:
             return False
 
-    def read_all(self) -> list[Message]:
+    def read_all(self) -> list[RelayMessage]:
         """
         Read all messages from the inbox (newest last).
         Does NOT mark them as processed — call mark_processed() after handling.
@@ -94,7 +59,7 @@ class Inbox:
                     line = line.strip()
                     if not line:
                         continue
-                    messages.append(Message.from_json(line))
+                    messages.append(RelayMessage.from_json(line))
         except Exception:
             return []
 
@@ -117,11 +82,10 @@ class Inbox:
                     line = line.strip()
                     if not line:
                         continue
-                    msg = Message.from_json(line)
+                    msg = RelayMessage.from_json(line)
                     if msg.id not in ids_to_remove:
                         remaining.append(line)
 
-            # Rewrite file with remaining messages
             with open(self.path, "w") as f:
                 for line in remaining:
                     f.write(line + "\n")
@@ -166,6 +130,7 @@ class InboxStore:
         if not inbox_dir.exists():
             return []
         return [
-            p.stem for p in inbox_dir.iterdir()
+            p.stem
+            for p in inbox_dir.iterdir()
             if p.suffix == ".jsonl" and not p.name.startswith(".")
         ]
