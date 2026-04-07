@@ -2,8 +2,8 @@
 """
 Moderator — conversation orchestration layer using BaseRelay.
 
-Refactored from original to work with any BaseRelay implementation
-(ExecRelay, InboxRelay, WebSocketRelay, etc.).
+Refactored to work with any BaseRelay implementation
+(ExecRelay, InboxRelay, WebSocketRelay) without isinstance checks.
 
 Usage:
     from relay.moderator import Moderator, ModeratorConfig, AgentConfig
@@ -37,6 +37,8 @@ class AgentConfig:
     ws_url: str
     token: str = "multi-agent-gateway-token"
     container_name: Optional[str] = None
+    agent_host: Optional[str] = None
+    agent_port: Optional[int] = None
 
 
 @dataclass
@@ -91,18 +93,24 @@ class Moderator:
             raise ValueError("No agents configured")
 
         first_url = config.agents[0].ws_url
-        if first_url.startswith("docker://"):
+        if (
+            first_url.startswith("docker://")
+            or first_url.startswith("http://")
+            or first_url.startswith("https://")
+        ):
             relay = ExecRelay()
             for agent in config.agents:
                 container = agent.container_name or agent.ws_url.replace(
                     "docker://", ""
-                )
+                ).replace("http://", "").replace("https://", "")
                 relay.connect(
                     agent.id,
                     container_name=container,
                     name=agent.name,
                     role=agent.role,
                     system_prompt=agent.system_prompt,
+                    agent_host=agent.agent_host or "localhost",
+                    agent_port=agent.agent_port or 8080,
                 )
             return relay
         else:
@@ -117,44 +125,28 @@ class Moderator:
         """Set up all agents and send their system prompts."""
         logger.info(f"Setting up {len(self.config.agents)} agents...")
 
-        if isinstance(self._relay, ExecRelay):
-            for agent in self.config.agents:
-                logger.info(f"  {agent.id} ({agent.name}): docker exec path")
-                self._relay.setup_agent(agent.id)
-            intro = (
-                self.config.intro_message
-                or f"Welcome. Today's topic: {self.config.topic}"
-            )
-            for agent in self.config.agents:
-                msg = RelayMessage(
-                    to_agent=agent.id, content=intro, from_agent="moderator"
-                )
-                self._relay.send(msg)
-        else:
-            for agent in self.config.agents:
-                logger.info(f"  {agent.id} ({agent.name}): WebSocket path")
-                self._relay.connect(agent.id, agent.ws_url, token=agent.token)
-                setup_msg = RelayMessage(
-                    to_agent=agent.id,
-                    content=agent.system_prompt,
-                    from_agent="moderator",
-                    metadata={"type": "system"},
-                )
-                response = self._relay.send(setup_msg)
-                logger.info(f"  {agent.id} setup response: {str(response)[:100]}")
+        intro = (
+            self.config.intro_message or f"Welcome. Today's topic: {self.config.topic}"
+        )
 
-            intro = (
-                self.config.intro_message
-                or f"Welcome. Today's topic: {self.config.topic}"
+        for agent in self.config.agents:
+            logger.info(f"  {agent.id} ({agent.name}): setting up")
+            setup_msg = RelayMessage(
+                to_agent=agent.id,
+                content=agent.system_prompt,
+                from_agent="moderator",
+                metadata={"type": "system"},
             )
-            for agent in self.config.agents:
-                msg = RelayMessage(
-                    to_agent=agent.id,
-                    content=intro,
-                    from_agent="moderator",
-                    metadata={"type": "user"},
-                )
-                self._relay.send(msg)
+            response = self._relay.send(setup_msg)
+            logger.info(f"  {agent.id} setup response: {str(response)[:100]}")
+
+            msg = RelayMessage(
+                to_agent=agent.id,
+                content=intro,
+                from_agent="moderator",
+                metadata={"type": "user"},
+            )
+            self._relay.send(msg)
 
         self._setup_done = True
         logger.info("Setup complete.")

@@ -216,31 +216,34 @@ Note: Inbox files are now an internal detail of AgentServer's inbox pattern impl
 3. ~~**TTL expiration**~~ — resolved: AgentServer handles expiration internally
 4. ~~**Persistence**~~ — resolved: Inbox files survive container restart if on shared volume
 5. **Streaming pattern** — deferred, when real pain point emerges
-6. **AgentServer discovery** — how does HostContainerBackend find AgentServer? Static config? Service discovery?
+6. ~~**AgentServer discovery**~~ — resolved: Static config (agent_id -> host:port mapping)
+7. **WebSocketBackend** — deferred, WebSocket transport not yet implemented
 
 ---
 
 ## Implementation Phases
 
 ### Phase 1: Define interfaces
-- [ ] `HostContainerBackend` abstract interface
-- [ ] `AgentServer` interface definition
+- [x] `HostContainerBackend` abstract interface — `relay/backends/base.py`
+- [x] `AgentServer` interface definition — `agent_side/server.py`
 
 ### Phase 2: Implement AgentServer
-- [ ] HTTP server with inbox pattern
-- [ ] `poll_inbox` and `write_response` endpoints
-- [ ] AgentAdapter lifecycle management
+- [x] HTTP server with inbox pattern — `agent_side/server.py`
+- [x] `poll_inbox` and `write_response` endpoints — `agent_side/patterns/inbox.py`
+- [x] AgentAdapter lifecycle management — `agent_side/harness.py`
 
 ### Phase 3: Implement HostContainerBackend
-- [ ] `DockerBackend` → HTTP client to AgentServer
-- [ ] `WebSocketBackend` → WebSocket client to AgentServer
+- [x] `DockerBackend` → HTTP client to AgentServer — `relay/backends/docker.py`
+- [x] `SSHBackend` → SSH tunnel → HTTP to AgentServer — `relay/backends/ssh.py`
+- [ ] `WebSocketBackend` → WebSocket client to AgentServer — deferred
 
 ### Phase 4: Update BaseRelay
-- [ ] Refactor to use HostContainerBackend
-- [ ] Remove embedded behavioral patterns
+- [x] Refactor ExecRelay to use DockerBackend — `relay/exec_relay.py`
+- [x] Refactor InboxRelay to use DockerBackend — `relay/inbox_relay.py`
+- [x] Moderator no longer uses isinstance checks — `relay/moderator.py`
 
 ### Phase 5: Deprecate gateway_harness
-- [ ] Absorb into AgentServer
+- [x] gateway_harness deprecated in favor of AgentServer — `harnesses/gateway_harness.py`
 
 ---
 

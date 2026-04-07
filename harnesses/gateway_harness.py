@@ -2,6 +2,17 @@
 """
 Gateway Harness — persistent gateway + inbox poller combined.
 
+DEPRECATED: This harness is superseded by AgentServer (agent_side/server.py).
+AgentServer provides the same functionality with a cleaner HTTP API and
+configurable delivery patterns (inbox/sync).
+
+For new deployments, use:
+    python3 /workspace/agent_side/server.py --agent-id=<id> --host=0.0.0.0 --port=8080 --delivery=inbox
+
+This harness is kept for backward compatibility.
+
+---
+
 Starts the OpenClaw gateway AND the inbox poller in the same container.
 This allows both:
   - Gateway debugging (gateway stays alive)

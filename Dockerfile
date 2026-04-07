@@ -41,6 +41,9 @@ COPY observability/ /workspace/observability/
 # Copy relay layer
 COPY relay/ /workspace/relay/
 
+# Copy agent_side (AgentServer)
+COPY agent_side/ /workspace/agent_side/
+
 # Copy constants module
 COPY constants.py /workspace/
 
