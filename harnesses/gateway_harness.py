@@ -13,7 +13,11 @@ Gateway Restart API:
 
     curl -X POST http://127.0.0.1:18790/restart
 
-  Response: 200 OK with body "restarting\n" on success.
+  Response:
+    200 OK  — restart initiated (body: "restarting\n")
+    503 OK  — restart already in progress (body: "restart in progress\n")
+    404     — unknown path
+
   The restart is graceful: poller stops → gateway tears down → gateway
   re-starts → poller resumes. Inflight messages are dropped.
 
@@ -41,26 +45,49 @@ from observability import SessionLogger
 
 GWCTL_PORT = 18790  # loopback-only, no security exposure inside container
 RESTART_FLAG = "/workspace/.gateway-restart-requested"
+RESTARTING = threading.Event()  # set while a restart is in-flight; causes 503 on new requests
 
 
 class GatewayCtlHandler(BaseHTTPRequestHandler):
-    """Handle gateway restart requests via HTTP."""
+    """Handle gateway restart requests via HTTP (loopback-only)."""
 
     def do_POST(self):
         if self.path in ("/restart", "/kill-gateway"):
             self._do_restart()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.end_headers()
-            self.wfile.write(b"restarting\n")
+        elif self.path == "/status":
+            self._do_status()
         else:
             self.send_response(404)
+            self.send_header("Content-Type", "text/plain")
             self.end_headers()
+            return
+
+    def _do_status(self):
+        """Return current state: 'ready' (200) or 'restarting' (503)."""
+        status = "restarting" if RESTARTING.is_set() else "ready"
+        code = 503 if RESTARTING.is_set() else 200
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(status.encode())
 
     def _do_restart(self):
-        # Signal the main loop by touching the flag file
+        """Initiate a gateway restart, or 503 if one is already running."""
+        if RESTARTING.is_set():
+            self.send_response(503)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"restart in progress\n")
+            return
+
+        RESTARTING.set()
         Path(RESTART_FLAG).touch()
-        print(f"[gwctl] Restart requested via HTTP from {self.client_address[0]}")
+        print(f"[gwctl] Restart requested via HTTP from {self.client_address[0]}", flush=True)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"restarting\n")
 
     def log_message(self, format, *args):
         # Silence default HTTP logging noise
@@ -69,8 +96,9 @@ class GatewayCtlHandler(BaseHTTPRequestHandler):
 
 def start_gateway_ctl_server() -> threading.Thread:
     """Start the HTTP control server on loopback-only port."""
+    server = HTTPServer(("127.0.0.1", GWCTL_PORT), GatewayCtlHandler)
     t = threading.Thread(
-        target=lambda: HTTPServer(("127.0.0.1", GWCTL_PORT), GatewayCtlHandler).serve_forever(),
+        target=server.serve_forever,
         daemon=True,
         name="gwctl-server",
     )
@@ -130,7 +158,6 @@ class InboxPoller:
         if not inbox_file.exists():
             return 0
 
-        # Read all unread messages
         messages = []
         try:
             with open(inbox_file) as f:
@@ -153,7 +180,6 @@ class InboxPoller:
             msg_id = msg.get("id", "")
             print(f"[{self.agent_id}] Processing: {msg.get('content', '')[:50]}...", flush=True)
             try:
-                content = msg.get("content", "")
                 response = self.process_message(msg)
                 print(f"[{self.agent_id}] Response: {response[:80]}...", flush=True)
                 corr_id = msg.get("correlation_id")
@@ -164,7 +190,6 @@ class InboxPoller:
             except Exception as e:
                 print(f"[{self.agent_id}] Error processing {msg_id[:8]}: {e}", flush=True)
 
-        # Remove processed messages
         if processed_ids:
             remaining = [m for m in messages if (m.get("id", "") or "") not in processed_ids]
             with open(inbox_file, "w") as f:
@@ -253,9 +278,10 @@ def main():
         poller = InboxPoller(agent_id=agent_id, poll_interval=poll_interval)
         poller.start()
 
-        # Clear the restart flag
+        # Clear the restart flag and lock
         if Path(RESTART_FLAG).exists():
             Path(RESTART_FLAG).unlink()
+        RESTARTING.clear()
         print("[!!] Restart complete.", flush=True)
 
     def shutdown(signum, frame):
