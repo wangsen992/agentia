@@ -579,7 +579,7 @@ def main() -> int:
     p_image_list = p_image_sub.add_parser("list", help="List images")
     p_image_build = p_image_sub.add_parser("build", help="Build an image")
     p_image_build.add_argument("name", help="Image name (e.g. analyst, critic)")
-    p_image_build.add_argument("--from", dest="template", help="Custom workspace directory [default: workspaces/roles/<name>/]")
+    p_image_build.add_argument("--from", dest="template", help="Path to workspace directory (required)")
     p_image_inspect = p_image_sub.add_parser("inspect", help="Inspect an image")
     p_image_inspect.add_argument("name", help="Image name")
     p_image_rm = p_image_sub.add_parser("rm", help="Remove an image")
