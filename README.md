@@ -29,22 +29,30 @@ relay/backends/docker.py
 # 1. Build the generic agent image
 docker build -t agentia .
 
-# 2. Create the container and install pi-agent runtime
-docker create --name my-agent -p 18080:8080 agentia \
+# 2. One-time setup: install runtime, then commit the container as an image
+CONTAINER_ID=$(docker run -d agentia \
     install pi-agent \
     --config /etc/agentia/agent.json \
     --provider minimax \
     --model MiniMax-M2.7 \
-    --workspace /workspace
+    --workspace /workspace)
 
-# 3. Start AgentServer (the install persists in the container)
-docker start my-agent
+sleep 25  # wait for install (npm + file render) to finish
+docker commit $CONTAINER_ID my-agent-image
+docker rm $CONTAINER_ID
+
+# 3. Start AgentServer
+docker run -d --name my-agent -p 18080:8080 \
+    -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
+    my-agent-image agentserver
 
 # 4. Send a message
 curl -s -X POST http://localhost:18080/message \
     -H "Content-Type: application/json" \
     -d '{"content": "What can you do?"}'
 ```
+
+> **Note:** pi-agent requires an LLM API key. Set `MINIMAX_API_KEY` (or your provider's env var) on the `docker run` command above.
 
 Or use the Python host-side library directly:
 
