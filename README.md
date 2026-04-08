@@ -104,6 +104,43 @@ mod.save_transcript("transcripts/latest.json")
 mod.print_transcript()
 ```
 
+### 5. Agentia CLI (AgentServer)
+
+The `agentia` CLI manages agent containers with AgentServer:
+
+```bash
+# Build an agent image
+agentia image build analyst
+
+# Create and start an agent (uses AgentServer by default)
+agentia create analyst my-analyst
+
+# List all agents with their endpoints
+agentia agents
+
+# Send a message to an agent
+agentia send my-analyst "What is 2+2?"
+
+# Check status
+agentia status my-analyst
+
+# View logs
+agentia logs my-analyst
+
+# Stop and destroy
+agentia stop my-analyst
+agentia destroy my-analyst
+```
+
+**Options:**
+```bash
+# Specify a custom port
+agentia create analyst my-analyst --port 19000
+
+# Use legacy inbox harness instead
+agentia create analyst my-analyst --harness inbox
+```
+
 ---
 
 ## Architecture
