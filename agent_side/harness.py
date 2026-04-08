@@ -31,6 +31,12 @@ class Harness:
 
     def _create_delivery(self):
         """Create the appropriate delivery pattern based on config."""
+        adapter_kwargs = dict(
+            adapter_type=self.config.adapter_type,
+            adapter_provider=self.config.adapter_provider,
+            adapter_model=self.config.adapter_model,
+            adapter_workspace=self.config.adapter_workspace,
+        )
         if self.config.delivery == "inbox":
             return InboxDelivery(
                 agent_id=self.agent_id,
@@ -38,11 +44,13 @@ class Harness:
                 responses_dir=self.config.responses_dir,
                 poll_interval=self.config.poll_interval,
                 agent_timeout=self.config.agent_timeout,
+                **adapter_kwargs,
             )
         elif self.config.delivery == "sync":
             return SyncDelivery(
                 agent_id=self.agent_id,
                 agent_timeout=self.config.agent_timeout,
+                **adapter_kwargs,
             )
         else:
             raise ValueError(f"Unknown delivery pattern: {self.config.delivery}")

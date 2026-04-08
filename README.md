@@ -14,72 +14,41 @@ cd agentia
 docker build -t agentia .
 ```
 
-### 2. Create and Start an Agent
+### 2. Setup Agent Runtime (pi-agent)
 
-Use the `agentia` CLI to create and manage agent containers:
+pi-agent is Agentia's primary agent runtime. Install it at container start:
 
 ```bash
-# Build an agent image (requires --from flag pointing to workspace)
-agentia image build analyst --from /path/to/workspace
+agentia install pi-agent \
+    --config /etc/agentia/agent.json \
+    --provider minimax \
+    --model MiniMax-M2.7 \
+    --workspace /workspace
+```
 
-# Create and start an agent
-agentia create analyst my-analyst
+### 3. Start AgentServer
 
-# List all agents
+```bash
+agentia agentserver
+```
+
+### 4. Create and Manage Agents
+
+```bash
+# Build an image
+agentia image build my-agent --from /path/to/workspace
+
+# Create and start agent
+agentia create my-image my-agent \
+    --adapter pi-agent \
+    --provider minimax \
+    --model MiniMax-M2.7
+
+# List agents
 agentia agents
-```
 
-### 3. Send a Message
-
-```python
-from relay.backends import DockerBackend, AgentEndpoint
-from relay.base import RelayMessage
-
-backend = DockerBackend({
-    "my-analyst": AgentEndpoint("my-analyst", "localhost", 18080),
-})
-
-msg = RelayMessage(to_agent="my-analyst", content="What is 2+2?", from_agent="user")
-response = backend.send_message(msg, "my-analyst")
-print(response)
-
-backend.close()
-```
-
-### 4. Multi-Agent with Moderator
-
-See `examples/moderator.py` for a complete example:
-
-```python
-from examples.moderator import Moderator, ModeratorConfig, AgentConfig
-
-config = ModeratorConfig(
-    agents=[
-        AgentConfig(
-            id="analyst",
-            name="Analyst",
-            role="Research analyst",
-            system_prompt="You are a research analyst.",
-            agent_host="localhost",
-            agent_port=18081,
-        ),
-        AgentConfig(
-            id="critic",
-            name="Critic",
-            role="Critical reviewer",
-            system_prompt="You are a critical reviewer.",
-            agent_host="localhost",
-            agent_port=18082,
-        ),
-    ],
-    topic="Should we use AI for research?",
-    max_turns=4,
-)
-
-mod = Moderator(config)
-mod.setup()
-mod.run()
-mod.print_transcript()
+# Send a message
+agentia send my-agent "Hello, what can you do?"
 ```
 
 ---
@@ -89,27 +58,57 @@ mod.print_transcript()
 ```
 Host side:
 ┌──────────────────────────────────────────────────────────────┐
-│  DockerBackend / SSHBackend (HostContainerBackend)            │
-│    ↓                                                         │
-│  Network (HTTP to AgentServer)                               │
+│  DockerBackend / SSHBackend (HostContainerBackend)             │
+│    ↓                                                          │
+│  Network (HTTP to AgentServer)                                │
 └──────────────────────────────────────────────────────────────┘
 
 Agent side (inside container):
 ┌──────────────────────────────────────────────────────────────┐
 │  AgentServer                                                 │
-│    ├── Control: GET/PUT/PATCH /config, GET /status, POST /restart │
-│    ├── Messaging: POST /message, POST /message/async, GET /response/{id} │
-│    └── Harness → AgentAdapter → OpenClaw subprocess          │
+│    ├── Control: GET/PUT/PATCH /config, GET /status           │
+│    ├── Messaging: POST /message, POST /message/async         │
+│    └── Harness → PiAgentAdapter → pi --mode rpc subprocess   │
 └──────────────────────────────────────────────────────────────┘
+
+pi-agent subprocess:
+  stdin/stdout JSONL
+  Bootstrap files: AGENTS.md, SYSTEM.md (written by agentia install)
 ```
 
-### Layers
+### Runtime Installation
 
-| Layer | Responsibility | Files |
-|-------|----------------|-------|
-| **HostContainerBackend** | HTTP transport to AgentServer (Docker/SSH) | `relay/backends/` |
-| **AgentServer** | Delivery patterns, HTTP interface, owns AgentAdapter lifecycle | `agent_side/` |
-| **AgentAdapter** | Per-message send/receive contract | `agents/adapters/` |
+The `agentia install` command renders Jinja2 templates and installs the agent runtime:
+
+```bash
+agentia install <adapter> --config <path> [options]
+```
+
+Templates are in `setup/adapters/<adapter>/`:
+- `config.tmpl` → `/etc/agentia/agent.json`
+- `bootstrap/*.tmpl` → `AGENTS.md`, `SYSTEM.md` in workspace
+- `install.sh` → runtime-specific installation
+
+---
+
+## pi-agent Adapter
+
+pi-agent runs as a subprocess with JSONL stdin/stdout protocol. It is Agentia's **primary** agent runtime.
+
+### Key features:
+- **Transparent bootstrap** — AGENTS.md/SYSTEM.md are plain files written by `agentia install`
+- **Clean RPC protocol** — stdin/stdout JSONL, no gateway, no hidden state
+- **Subprocess-per-agent** — dead simple isolation
+- **Session branching** — tree-structured sessions
+
+### Adding a new adapter
+
+1. Create `setup/adapters/<name>/install.sh` — runtime install
+2. Create `setup/adapters/<name>/config.tmpl` — Jinja2 config template
+3. Create `setup/adapters/<name>/bootstrap/*.tmpl` — bootstrap templates
+4. `agentia install <name>` works automatically
+
+See `setup/README.md` for details.
 
 ---
 
@@ -133,10 +132,6 @@ backend.send_message_async(msg, "agent-a")
 
 # Broadcast to multiple agents
 backend.broadcast(RelayMessage(to_agents=["agent-a", "agent-b"], content="Hello"))
-
-# Check status
-status = backend.get_status("agent-a")
-print(status)  # {"status": "ready", "ready": True, "uptime": 123}
 
 backend.close()
 ```
@@ -199,8 +194,6 @@ curl -X PATCH http://localhost:18080/config \
   -d '{"delivery":"inbox"}'
 ```
 
-See [SPEC 009](./specs/009_agentserver_api.md) for full API documentation.
-
 ---
 
 ## File Structure
@@ -217,34 +210,47 @@ relay/
 
 agent_side/
 ├── server.py            ← AgentServer HTTP server
-├── config.py            ← Config management
-├── harness.py           ← Internal harness
+├── config.py            ← Config management (adapter fields added)
+├── harness.py          ← Internal harness
 └── patterns/
     ├── inbox.py         ← File-based inbox delivery
     └── sync.py          ← Direct subprocess delivery
 
-agents/
+agents/adapters/
+├── __init__.py          ← AgentAdapter, get_adapter()
+├── base.py              ← AgentAdapter ABC
+├── factory.py           ← Adapter factory (pi-agent default)
+├── pi_agent.py          ← pi-agent implementation (primary)
+└── openclaw.py          ← OpenClaw implementation (legacy)
+
+setup/
+├── README.md             ← How to add new adapter
 └── adapters/
-    ├── __init__.py      ← AgentAdapter, get_adapter()
-    ├── base.py          ← AgentAdapter ABC
-    ├── factory.py       ← Adapter factory
-    └── openclaw.py      ← OpenClaw implementation
+    ├── pi-agent/
+    │   ├── install.sh
+    │   ├── config.tmpl
+    │   └── bootstrap/
+    │       ├── AGENTS.md.tmpl
+    │       ├── SYSTEM.md.tmpl
+    │       └── TOOLS.md.tmpl
+    └── openclaw/
+        ├── install.sh
+        ├── config.tmpl
+        └── bootstrap/
 
 examples/
 └── moderator.py         ← Multi-agent orchestration example
-
-containers/
-└── config-sanitized/   ← Isolated OpenClaw config (no API keys)
 ```
 
 ---
 
 ## Design Decisions
 
-### Orchestration: Moderator First
-- Start with structured moderator pattern (NOT autonomous/emergent)
-- Autonomous is the end state, not the starting point
-- Controlled case needed before emergent behavior is meaningful to study
+### Primary Runtime: pi-agent
+- **pi-agent** replaces OpenClaw as the primary agent runtime
+- Transparent bootstrap via plain files (AGENTS.md, SYSTEM.md)
+- No hidden system prompt injection
+- Clean subprocess-per-agent isolation
 
 ### Transport: HTTP to AgentServer
 - AgentServer runs inside each agent container/VM
@@ -255,6 +261,10 @@ containers/
 - **Sync**: Message delivered directly; harness calls subprocess; response returned immediately
 - **Inbox**: Messages queued in file; harness polls; response written to correlation file
 
+### Orchestration: Moderator First
+- Start with structured moderator pattern (NOT autonomous/emergent)
+- Autonomous is the end state, not the starting point
+
 ---
 
 ## SPECs
@@ -262,35 +272,19 @@ containers/
 | Spec | Status | Description |
 |------|--------|-------------|
 | 001 | done | Repository structure |
-| 002 | done | OpenClaw agent adapter |
-| 003 | done | Adapter Dockerfiles |
 | 005 | done | Relay/Inbox architecture (AgentServer refactor) |
 | 006 | done | Orchestration patterns decision |
 | 007 | done | Agent provision + workspace |
-| 008 | done | Agent self-configuration (verify loop) |
 | 009 | done | AgentServer API specification |
-
----
-
-## Security Model
-
-**Host config isolation is strictly enforced.** The agent container never mounts the host's `~/.openclaw/` directory.
-
-### How agentia handles it
-1. **At build time:** OpenClaw config is COPY'd into the Docker image
-2. **At container create:** Image config is extracted to `~/.agentia/containers/{id}/`
-3. **At container run:** That per-container copy is mounted as a volume
-
-```
-Host ~/.agentia/containers/{id}/openclaw/  →  Container /root/.openclaw/
-Host ~/.openclaw/  ← NEVER touched
-```
 
 ---
 
 ## References
 
 - Issue #12: [AgentServer meta-issue](https://github.com/wangsen992/agentia/issues/12)
+- Issue #17: [pi-agent as Primary Agent Runtime](https://github.com/wangsen992/agentia/issues/17)
+- Issue #15: [Observability](https://github.com/wangsen992/agentia/issues/15)
+- pi-agent RPC docs: https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/rpc.md
 - SPEC 005: [Relay & Inbox Architecture](./specs/005_relay_inbox.md)
 - SPEC 009: [AgentServer API](./specs/009_agentserver_api.md)
 - Inspired by: multi-agent LLMs (Anthropic 2025), AutoGen Core, Agentic workflows

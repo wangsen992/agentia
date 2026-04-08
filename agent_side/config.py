@@ -8,7 +8,7 @@ AgentServer reads config at startup and can receive runtime updates via PATCH /c
 import json
 import os
 import threading
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Optional
 
@@ -28,6 +28,17 @@ class AgentServerConfig:
     responses_dir: str = "/workspace/inbox/responses"
     agent_timeout: int = 120
     log_level: str = "info"
+
+    adapter_type: str = "pi-agent"
+    adapter_provider: str = "minimax"
+    adapter_model: str = "MiniMax-M2.7"
+    adapter_workspace: str = "/workspace"
+
+    role_persona: str = ""
+    role_goal: str = ""
+    role_backstory: str = ""
+
+    skills: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

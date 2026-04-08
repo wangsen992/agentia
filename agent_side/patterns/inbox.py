@@ -2,7 +2,7 @@
 Inbox delivery pattern for AgentServer.
 
 Messages are queued in a file-based inbox.
-The harness polls the inbox file, processes messages via OpenClawAdapter,
+The harness polls the inbox file, processes messages via an AgentAdapter,
 and writes responses to the responses directory.
 """
 
@@ -21,7 +21,7 @@ class InboxDelivery:
     File-based inbox delivery pattern.
 
     Messages are appended to <inbox_dir>/<agent_id>.jsonl.
-    The harness polls this file, processes each message via OpenClawAdapter,
+    The harness polls this file, processes each message via an AgentAdapter,
     and writes responses to <responses_dir>/<correlation_id>.jsonl.
     """
 
@@ -32,12 +32,20 @@ class InboxDelivery:
         responses_dir: str = "/workspace/inbox/responses",
         poll_interval: float = 2.0,
         agent_timeout: int = 120,
+        adapter_type: str = "pi-agent",
+        adapter_provider: str = "minimax",
+        adapter_model: str = "MiniMax-M2.7",
+        adapter_workspace: str = "/workspace",
     ):
         self.agent_id = agent_id
         self.inbox_dir = Path(inbox_dir)
         self.responses_dir = Path(responses_dir)
         self.poll_interval = poll_interval
         self.agent_timeout = agent_timeout
+        self._adapter_type = adapter_type
+        self._adapter_provider = adapter_provider
+        self._adapter_model = adapter_model
+        self._adapter_workspace = adapter_workspace
 
         self._inbox_path = self.inbox_dir / f"{agent_id}.jsonl"
         self._adapter: Optional[AgentAdapter] = None
@@ -48,7 +56,13 @@ class InboxDelivery:
     def _ensure_adapter(self) -> AgentAdapter:
         """Lazily create and setup the agent adapter."""
         if self._adapter is None:
-            self._adapter = get_adapter(timeout=self.agent_timeout)
+            self._adapter = get_adapter(
+                runtime=self._adapter_type,
+                provider=self._adapter_provider,
+                model=self._adapter_model,
+                workspace=self._adapter_workspace,
+                timeout=self.agent_timeout,
+            )
             self._adapter.setup()
         return self._adapter
 
@@ -133,7 +147,7 @@ class InboxDelivery:
 
     def process_message(self, message: dict) -> Optional[str]:
         """
-        Process a single message via OpenClawAdapter.
+        Process a single message via the configured AgentAdapter.
 
         Returns response content string, or None on error.
         """

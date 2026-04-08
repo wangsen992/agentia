@@ -44,6 +44,13 @@ except Exception as e:
     print(f"  examples.moderator  FAIL: {e}")
 
 try:
+    from agents.adapters.pi_agent import PiAgentAdapter
+
+    print("  PiAgentAdapter      OK")
+except Exception as e:
+    print(f"  PiAgentAdapter      FAIL: {e}")
+
+try:
     from agent_side import AgentServer
 
     print("  agent_side          OK")

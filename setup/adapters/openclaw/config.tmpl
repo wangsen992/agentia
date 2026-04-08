@@ -1,0 +1,14 @@
+{
+  "agent_id": "{{ agent_id }}",
+  "adapter": "{{ adapter }}",
+  "workspace": "{{ workspace }}",
+  "role": {
+    "persona": "{% if role_persona %}{{ role_persona }}{% else %}You are {{ agent_id }}.{% endif %}",
+    "goal": "{{ role_goal }}",
+    "backstory": "{{ backstory }}"
+  },
+  "skills": [{% for s in skills %}"{{ s }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+  "env": {
+    {% for k, v in env.items() %}"{{ k }}": "{{ v }}"{% if not loop.last %}, {% endif %}{% endfor %}
+  }
+}

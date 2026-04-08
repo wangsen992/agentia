@@ -4,11 +4,9 @@ Agent Adapter Factory
 Usage:
     from agents.adapters.factory import get_adapter
 
-    adapter = get_adapter("openclaw", workspace="/path/to/workspace")
+    adapter = get_adapter("pi-agent", workspace="/path/to/workspace", provider="minimax", model="MiniMax-M2.7")
     # or
-    adapter = get_adapter("pi", model="claude-sonnet")
-    # or
-    adapter = get_adapter()  # defaults to openclaw
+    adapter = get_adapter()  # defaults to pi-agent
 
 To add a new adapter:
     1. Create agents/adapters/<name>.py implementing AgentAdapter
@@ -20,7 +18,6 @@ from typing import Optional, Type
 from .base import AgentAdapter
 
 
-# Registry of available adapters
 ADAPTERS: dict[str, Type[AgentAdapter]] = {}
 
 
@@ -30,19 +27,19 @@ def _register_adapters():
     if ADAPTERS:
         return
 
-    # Import known adapters
     try:
-        from .openclaw import OpenClawAdapter
-        ADAPTERS["openclaw"] = OpenClawAdapter
-    except ImportError as e:
+        from .pi_agent import PiAgentAdapter
+
+        ADAPTERS["pi-agent"] = PiAgentAdapter
+    except ImportError:
         pass
 
-    # Future adapters:
-    # try:
-    #     from .pi import PiAgentAdapter
-    #     ADAPTERS["pi"] = PiAgentAdapter
-    # except ImportError:
-    #     pass
+    try:
+        from .openclaw import OpenClawAdapter
+
+        ADAPTERS["openclaw"] = OpenClawAdapter
+    except ImportError:
+        pass
 
 
 def get_adapter(
@@ -53,8 +50,8 @@ def get_adapter(
     Return an AgentAdapter for the specified runtime.
 
     Args:
-        runtime: Adapter name (e.g., "openclaw", "pi"). Defaults to "openclaw".
-        **opts: Passed to the adapter constructor (e.g., workspace, timeout).
+        runtime: Adapter name (e.g., "pi-agent", "openclaw"). Defaults to "pi-agent".
+        **opts: Passed to the adapter constructor (e.g., workspace, provider, model, timeout).
 
     Returns:
         An instance of the requested AgentAdapter subclass.
@@ -65,14 +62,11 @@ def get_adapter(
     _register_adapters()
 
     if runtime is None:
-        runtime = "openclaw"
+        runtime = "pi-agent"
 
     if runtime not in ADAPTERS:
         available = ", ".join(sorted(ADAPTERS.keys())) or "none"
-        raise ValueError(
-            f"Unknown agent runtime: {runtime!r}. "
-            f"Available: {available}"
-        )
+        raise ValueError(f"Unknown agent runtime: {runtime!r}. Available: {available}")
 
     return ADAPTERS[runtime](**opts)
 

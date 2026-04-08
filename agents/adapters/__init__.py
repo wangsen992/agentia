@@ -6,7 +6,10 @@
 # Factory:
 #     from agents.adapters.factory import get_adapter, list_adapters
 #
-# OpenClaw adapter (current default):
+# pi-agent adapter (primary):
+#     from agents.adapters.pi_agent import PiAgentAdapter
+#
+# OpenClaw adapter (legacy):
 #     from agents.adapters.openclaw import OpenClawAdapter
 
 from .base import AgentAdapter, AgentResponse

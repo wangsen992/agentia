@@ -1,0 +1,11 @@
+# Tools
+
+{% if tools %}
+{% for tool in tools %}
+## {{ tool.name }}
+
+{{ tool.description }}
+{% endfor %}
+{% else %}
+No custom tools configured.
+{% endif %}

@@ -1,59 +1,31 @@
-# OpenClaw Agent Experiment Harness Container
+# Agentia Agent Container
 #
-# SAFETY: NEVER mount host ~/.openclaw as a volume into a running container.
-# Container processes write to the mounted directory (models.json.tmp, sessions,
-# device identity), corrupting the host's OpenClaw configuration.
+# Generic base image for agent containers.
+# Runtime (pi-agent, OpenClaw, etc.) is installed at container start via:
+#   agentia install <adapter> --config /etc/agentia/agent.json
 #
-# Instead: COPY config files into the image at build time.
-# The container gets its own isolated copy that cannot affect the host.
+# Usage:
+#   docker build -t agentia .
+#   docker run -d --name my-agent -p 18000:8080 agentia agentserver
 
-FROM node:22-bookworm-slim
+FROM python:3.12-slim
 
-# Install Python and pip
 RUN apt-get update && apt-get install -y \
-    python3 python3-venv python3-pip curl \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies for relay
-RUN pip3 install requests --break-system-packages
+RUN pip3 install requests jinja2 --break-system-packages
 
-# Install OpenClaw globally
-RUN npm install -g openclaw@latest \
-    && npm install -g @tobilu/qmd \
-    && npm install -g @buape/carbon \
-       @larksuiteoapi/node-sdk \
-       @slack/web-api \
-       grammy
-
-# Create directory structure
-RUN mkdir -p /workspace /workspace/inbox /workspace/inbox/responses /root/.openclaw/identity /root/.openclaw/agents/main/agent
-
-# Copy agent adapter layer
 COPY agents/ /workspace/agents/
-
-# Copy relay layer
 COPY relay/ /workspace/relay/
-
-# Copy agent_side (AgentServer)
 COPY agent_side/ /workspace/agent_side/
-
-# Copy constants module
+COPY setup/ /workspace/setup/
 COPY constants.py /workspace/
-
-# Copy sanitized OpenClaw config (no channels, no Discord, no personal API keys)
-# SECURITY: host ~/.openclaw is never mounted; container gets isolated config only.
-COPY containers/config-sanitized/openclaw.json /root/.openclaw/openclaw.json
-COPY containers/config-sanitized/auth-profiles.json /root/.openclaw/agents/main/agent/auth-profiles.json
 
 WORKDIR /workspace
 
-# ─── Usage ────────────────────────────────────────────────────────────────────
-#
-#   docker build -t agentia .
-#
-# AgentServer is started via the agentia CLI:
-#   agentia create <image> <agent-id>
-#   agentia send <agent-id> "message"
-#
-ENTRYPOINT ["python3", "/workspace/agent_side/server.py"]
-CMD ["--help"]
+COPY agentia /usr/local/bin/agentia
+RUN chmod +x /usr/local/bin/agentia
+
+ENTRYPOINT ["agentia"]
+CMD ["agentserver"]

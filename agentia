@@ -2,13 +2,15 @@
 """
 agentia — Agent Registry and Runtime
 
-A Docker-like CLI for managing agent instances with AgentServer.
+A CLI for managing agent instances with AgentServer.
+Supports Docker containers and SSH-based deployments.
 
 Usage:
+    agentia install <adapter> --config <path>        Setup agent runtime
+    agentia agentserver                              Start AgentServer
     agentia image list
     agentia image build <name> [--from <workspace-path>]
-    agentia image inspect <name>
-    agentia create <image> <agent-id> [--harness agentserver] [--port <port>]
+    agentia create <image> <agent-id> [--adapter pi-agent] [--provider minimax] [--model MiniMax-M2.7]
     agentia agents
     agentia ps [-a]
     agentia start <agent-id>
@@ -21,6 +23,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -33,6 +36,7 @@ from pathlib import Path
 DEFAULT_REGISTRY = Path.home() / ".agentia"
 DEFAULT_IMAGE = "agentia"
 DEFAULT_PORT_RANGE = (18000, 18100)
+AGENTIA_CONFIG_DIR = Path("/etc/agentia")
 
 
 def _load_agentia_config() -> dict:
@@ -49,7 +53,6 @@ def _save_agentia_config(config: dict):
 
 
 def _allocate_agent_port() -> int:
-    """Allocate a port from configured range, checking for Docker collisions."""
     config = _load_agentia_config()
     port_range = config.get("port_range", {"start": 18000, "end": 18100})
     start = port_range.get("start", 18000)
@@ -70,19 +73,164 @@ def _allocate_agent_port() -> int:
     raise RuntimeError(f"No available ports in range {start}-{end}")
 
 
+# ─── Jinja2 Setup Rendering ───────────────────────────────────────────────────
+
+def _render_templates(
+    adapter: str,
+    context: dict,
+    config_output: Path,
+    workspace: Path,
+    setup_dir: Path,
+):
+    """Render config template + bootstrap templates using Jinja2."""
+    try:
+        from jinja2 import Environment, FileSystemLoader
+    except ImportError:
+        print("[agentia] Jinja2 required: pip install jinja2")
+        raise RuntimeError("Jinja2 not installed: pip install jinja2")
+
+    adapter_dir = setup_dir / "adapters" / adapter
+    if not adapter_dir.exists():
+        raise ValueError(f"Unknown adapter: {adapter}. No setup script at {adapter_dir}")
+
+    env = Environment(loader=FileSystemLoader(str(adapter_dir)), keep_trailing_newline=True)
+    env.globals["env"] = os.environ
+
+    config_output.parent.mkdir(parents=True, exist_ok=True)
+    config_tmpl = env.get_template("config.tmpl")
+    rendered_config = config_tmpl.render(**context)
+    config_output.write_text(rendered_config)
+    print(f"[agentia] Config rendered: {config_output}")
+
+    bootstrap_dir = adapter_dir / "bootstrap"
+    if bootstrap_dir.exists():
+        for tmpl_file in bootstrap_dir.glob("*.tmpl"):
+            output_name = tmpl_file.stem
+            tmpl = env.get_template(f"bootstrap/{tmpl_file.name}")
+            rendered = tmpl.render(**context)
+            output_path = workspace / output_name
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(rendered)
+            print(f"[agentia] Bootstrap rendered: {output_path}")
+
+
+def _build_context(
+    agent_id: str,
+    adapter: str,
+    provider: str,
+    model: str,
+    workspace: str,
+    role_goal: str,
+    backstory: str,
+    skills: list[str],
+    var_overrides: dict,
+) -> dict:
+    """Build Jinja2 template context from CLI args + env vars."""
+    context = {
+        "agent_id": agent_id,
+        "adapter": adapter,
+        "provider": provider,
+        "model": model,
+        "workspace": workspace,
+        "role_goal": role_goal or "",
+        "backstory": backstory or "",
+        "skills": skills or [],
+        "env": {},
+    }
+
+    for k, v in os.environ.items():
+        if k.startswith("AGENT_"):
+            context["env"][k] = v
+
+    context["env"].update(var_overrides)
+    context.update(var_overrides)
+
+    return context
+
+
+def cmd_install(
+    adapter: str,
+    config_path: str,
+    agent_id: str,
+    provider: str,
+    model: str,
+    workspace: str,
+    role_goal: str,
+    backstory: str,
+    skills: list[str],
+    var_overrides: dict,
+    setup_dir: Path,
+):
+    """
+    Render config + bootstrap templates, run runtime install script.
+
+    Usage: agentia install <adapter> --config <path> [options]
+    """
+    config_path = Path(config_path)
+
+    context = _build_context(
+        agent_id=agent_id,
+        adapter=adapter,
+        provider=provider,
+        model=model,
+        workspace=workspace,
+        role_goal=role_goal,
+        backstory=backstory,
+        skills=skills,
+        var_overrides=var_overrides,
+    )
+
+    _render_templates(
+        adapter=adapter,
+        context=context,
+        config_output=config_path,
+        workspace=Path(workspace),
+        setup_dir=setup_dir,
+    )
+
+    install_sh = setup_dir / "adapters" / adapter / "install.sh"
+    if install_sh.exists():
+        result = subprocess.run(
+            ["bash", str(install_sh), workspace, str(config_path)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"[agentia] install.sh failed:\n{result.stderr}")
+            return 1
+        print(f"[agentia] Runtime installed: {adapter}")
+    else:
+        print(f"[agentia] No install.sh for {adapter}, skipping runtime install")
+
+    print(f"[agentia] Setup complete for {agent_id}")
+    return 0
+
+
+def cmd_agentserver():
+    """
+    Start AgentServer.
+
+    Reads config from AGENTIA_CONFIG (default: /etc/agentia/agent.json)
+    and AGENT_* env vars for overrides.
+    """
+    config_path = os.environ.get("AGENTIA_CONFIG", "/etc/agentia/agent.json")
+    workspace = os.environ.get("AGENT_WORKSPACE", "/workspace")
+
+    print(f"[agentia] Starting AgentServer with config: {config_path}")
+    os.execvp(
+        "python3",
+        ["python3", "/workspace/agent_side/server.py"],
+    )
+
+
 # ─── Registry ────────────────────────────────────────────────────────────────
 
 class Registry:
-    """
-    Manages ~/.agentia/ — images and containers.
-    """
-
     def __init__(self, registry_dir: Path = DEFAULT_REGISTRY):
         self.registry_dir = registry_dir
         self.images_dir = registry_dir / "images"
         self.containers_dir = registry_dir / "containers"
         self.registry_file = registry_dir / "registry.json"
-        self.config_file = registry_dir / "config.toml"
 
     def ensure_dirs(self):
         self.images_dir.mkdir(parents=True, exist_ok=True)
@@ -95,8 +243,6 @@ class Registry:
 
     def save_registry(self, data: dict):
         self.registry_file.write_text(json.dumps(data, indent=2))
-
-    # ─── Images ───────────────────────────────────────────────────────────────
 
     def list_images(self) -> list[str]:
         data = self.load_registry()
@@ -115,8 +261,6 @@ class Registry:
 
     def image_dir(self, name: str) -> Path:
         return self.images_dir / name
-
-    # ─── Containers ───────────────────────────────────────────────────────────
 
     def list_containers(self, all_: bool = False) -> list[dict]:
         data = self.load_registry()
@@ -148,50 +292,23 @@ class Registry:
             self.save_registry(data)
 
 
-# ─── Adapter Interface ───────────────────────────────────────────────────────
-
-class AgentAdapter(Registry):
-    """
-    Base adapter — provides the agent runtime interface.
-    Subclasses implement transport-specific logic.
-    """
-
-    def create_container(self, image_name: str, agent_id: str) -> Path:
-        raise NotImplementedError
-
-    def start_container(self, agent_id: str):
-        raise NotImplementedError
-
-    def stop_container(self, agent_id: str):
-        raise NotImplementedError
-
-    def destroy_container(self, agent_id: str):
-        raise NotImplementedError
-
-    def send_to_agent(self, agent_id: str, message: str) -> str:
-        raise NotImplementedError
-
-    def container_status(self, agent_id: str) -> str:
-        raise NotImplementedError
-
-
 # ─── Docker Adapter ─────────────────────────────────────────────────────────---
 
-class DockerAdapter(AgentAdapter):
-    """
-    Docker-based agent runtime.
-    Agents run as containers with AgentServer for messaging.
-    """
-
+class DockerAdapter(Registry):
     def __init__(self, registry_dir: Path = DEFAULT_REGISTRY, image: str = "agentia"):
         super().__init__(registry_dir)
         self.image = image
         self.inbox_dir = registry_dir / "inbox"
 
-    # ─── Container lifecycle ───────────────────────────────────────────────
-
-    def create_container(self, image_name: str, agent_id: str) -> Path:
-        """Create a new container from an image."""
+    def create_container(
+        self,
+        image_name: str,
+        agent_id: str,
+        adapter: str = "pi-agent",
+        provider: str = "minimax",
+        model: str = "MiniMax-M2.7",
+        workspace_template: str = None,
+    ) -> Path:
         container_dir = self.container_dir(agent_id)
         image_dir = self.image_dir(image_name)
 
@@ -199,15 +316,12 @@ class DockerAdapter(AgentAdapter):
             raise ValueError(f"Image '{image_name}' not found. Run: agentia image build {image_name}")
 
         meta = self.get_image(image_name)
-        if meta.get("framework", {}).get("type") != "openclaw":
-            raise NotImplementedError(f"Framework {meta.get('framework', {}).get('type')} not supported yet")
 
         container_dir.mkdir(parents=True, exist_ok=True)
         (container_dir / "workspace").mkdir(exist_ok=True)
         (container_dir / "state").mkdir(exist_ok=True)
         (container_dir / "state" / "logs").mkdir(exist_ok=True)
         (container_dir / "state" / "memory").mkdir(exist_ok=True)
-        (container_dir / "openclaw").mkdir(exist_ok=True)
 
         img_workspace = image_dir / "workspace"
         if img_workspace.exists():
@@ -218,33 +332,29 @@ class DockerAdapter(AgentAdapter):
                 elif item.is_dir():
                     shutil.copytree(item, dest, dirs_exist_ok=True)
 
-        agent_name = f"{image_name.title()} ({agent_id})"
-        id_file = container_dir / "workspace" / "IDENTITY.md"
-        if id_file.exists():
-            id_content = id_file.read_text()
-            id_content = re.sub(
-                r"^(\s*- \*\*Name:\*\*\s*).+$",
-                rf"\1{agent_name}",
-                id_content,
-                flags=re.MULTILINE
-            )
-            id_file.write_text(id_content)
-
         container_meta = {
             "container_id": agent_id,
             "image": image_name,
             "status": "created",
             "created_at": datetime.now().isoformat(),
-            "framework": meta.get("framework", {}),
-            "harness": "agentserver",
+            "adapter": adapter,
+            "provider": provider,
+            "model": model,
         }
-        (container_dir / "container.json").write_text(json.dumps(container_meta, indent=2))
+        if workspace_template:
+            container_meta["workspace_template"] = workspace_template
 
+        (container_dir / "container.json").write_text(json.dumps(container_meta, indent=2))
         self.save_container(agent_id, container_meta)
         return container_dir
 
-    def start_container(self, agent_id: str):
-        """Start the agent container."""
+    def start_container(
+        self,
+        agent_id: str,
+        adapter: str = "pi-agent",
+        provider: str = "minimax",
+        model: str = "MiniMax-M2.7",
+    ):
         container_dir = self.container_dir(agent_id)
         meta = self.get_container(agent_id)
         if not meta:
@@ -254,24 +364,24 @@ class DockerAdapter(AgentAdapter):
         inbox_file = self.inbox_dir / f"{agent_id}.jsonl"
         inbox_file.touch(exist_ok=True)
 
-        oc_dir = container_dir / "openclaw"
-        oc_dir.mkdir(parents=True, exist_ok=True)
-        sanitized_cfg = Path(__file__).parent / "containers" / "config-sanitized"
-        shutil.copy2(sanitized_cfg / "openclaw.json", oc_dir / "openclaw.json")
-        auth_dir = oc_dir / "agents" / "main" / "agent"
-        auth_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(sanitized_cfg / "auth-profiles.json", auth_dir / "auth-profiles.json")
-
         container_name = f"agentia-{agent_id}"
         ws_dir = container_dir / "workspace"
         inbox_str = str(self.inbox_dir)
-
-        gateway_token = "multi-agent-relay-token"
 
         agent_port = meta.get("agent_port") or _allocate_agent_port()
         if "agent_port" not in meta:
             meta["agent_port"] = agent_port
             self.save_container(agent_id, meta)
+
+        container_config_dir = container_dir / "config"
+        container_config_dir.mkdir(parents=True, exist_ok=True)
+        container_config_file = container_config_dir / "agent.json"
+        container_config_file.write_text(json.dumps({
+            "adapter": adapter,
+            "provider": provider,
+            "model": model,
+            "workspace": "/workspace",
+        }, indent=2))
 
         cmd = [
             "docker", "run", "-d",
@@ -281,18 +391,15 @@ class DockerAdapter(AgentAdapter):
             "-p", f"{agent_port}:8080",
             "-v", f"{inbox_str}:/workspace/inbox",
             "-v", f"{inbox_str}/responses:/workspace/inbox/responses",
-            "-v", f"{ws_dir}:/workspace-src",
-            "-v", f"{oc_dir}:/root/.openclaw",
+            "-v", f"{ws_dir}:/workspace",
+            "-v", f"{container_config_dir}:/etc/agentia",
             "-e", f"AGENT_ID={agent_id}",
-            "-e", f"OPENCLAW_GATEWAY_TOKEN={gateway_token}",
-            "-e", f"OPENCLAW_IDENTITY_TOKEN={gateway_token}",
-            "--entrypoint", "python3",
+            "-e", f"AGENTIA_CONFIG=/etc/agentia/agent.json",
+            "-e", f"AGENT_ADAPTER={adapter}",
+            "-e", f"AGENT_PROVIDER={provider}",
+            "-e", f"AGENT_MODEL={model}",
             self.image,
-            "/workspace/agent_side/server.py",
-            "--agent-id", agent_id,
-            "--host", "0.0.0.0",
-            "--port", "8080",
-            "--delivery", "sync",
+            "agentserver",
         ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
@@ -304,7 +411,6 @@ class DockerAdapter(AgentAdapter):
         print(f"[agentia] Started {agent_id}")
 
     def start_existing_container(self, agent_id: str):
-        """Start a previously created (but stopped) container."""
         meta = self.get_container(agent_id)
         if not meta:
             raise ValueError(f"Container '{agent_id}' not found")
@@ -320,7 +426,6 @@ class DockerAdapter(AgentAdapter):
         print(f"[agentia] Started {agent_id}")
 
     def stop_container(self, agent_id: str):
-        """Stop the container."""
         container_name = f"agentia-{agent_id}"
         subprocess.run(["docker", "stop", container_name], capture_output=True)
         meta = self.get_container(agent_id)
@@ -330,22 +435,15 @@ class DockerAdapter(AgentAdapter):
         print(f"[agentia] Stopped {agent_id}")
 
     def destroy_container(self, agent_id: str):
-        """Stop container and delete all state."""
         container_name = f"agentia-{agent_id}"
         subprocess.run(["docker", "rm", "-f", container_name], capture_output=True)
         container_dir = self.container_dir(agent_id)
         if container_dir.exists():
-            subprocess.run(
-                ["docker", "run", "--rm",
-                 "-v", f"{container_dir}:/data",
-                 "alpine", "rm", "-rf", "/data"],
-                capture_output=True
-            )
+            shutil.rmtree(container_dir)
         self.remove_container(agent_id)
         print(f"[agentia] Destroyed {agent_id}")
 
     def send_to_agent(self, agent_id: str, message: str) -> str:
-        """Send a message via DockerBackend HTTP to AgentServer."""
         sys.path.insert(0, str(Path(__file__).parent))
         from relay.backends import DockerBackend, AgentEndpoint
         from relay.base import RelayMessage
@@ -371,7 +469,6 @@ class DockerAdapter(AgentAdapter):
         return response
 
     def container_status(self, agent_id: str) -> str:
-        """Get container status. Syncs registry if Docker state diverges from metadata."""
         container_name = f"agentia-{agent_id}"
         result = subprocess.run(
             ["docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Status}}"],
@@ -406,8 +503,8 @@ def cmd_image_list(adapter: DockerAdapter):
         framework = meta.get("framework", {}).get("type", "unknown")
         print(f"  {img}:{version}  [{framework}]")
 
+
 def cmd_image_build(adapter: DockerAdapter, name: str, template: str = None):
-    """Build an image from a workspace directory."""
     if not template:
         print("[agentia] Error: --from <path> is required")
         print("  Usage: agentia image build <name> --from <workspace-path>")
@@ -432,10 +529,11 @@ def cmd_image_build(adapter: DockerAdapter, name: str, template: str = None):
     meta = {
         "name": name,
         "version": "latest",
-        "framework": {"type": "openclaw"},
+        "framework": {"type": "pi-agent"},
     }
     adapter.save_image(name, meta)
     print(f"[agentia] Built image '{name}' from {src}")
+
 
 def cmd_image_inspect(adapter: DockerAdapter, name: str):
     meta = adapter.get_image(name)
@@ -443,6 +541,7 @@ def cmd_image_inspect(adapter: DockerAdapter, name: str):
         print(f"Image '{name}' not found")
         return
     print(json.dumps(meta, indent=2))
+
 
 def cmd_image_rm(adapter: DockerAdapter, name: str):
     image_dir = adapter.image_dir(name)
@@ -457,84 +556,141 @@ def cmd_image_rm(adapter: DockerAdapter, name: str):
 
 # ─── Container Commands ───────────────────────────────────────────────────────
 
-def cmd_create(adapter: DockerAdapter, image_name: str, agent_id: str, port: int | None):
-    adapter.ensure_dirs()
-    existing = adapter.get_container(agent_id)
+def cmd_create(
+    adapter_cli: DockerAdapter,
+    image_name: str,
+    agent_id: str,
+    port: int | None,
+    adapter: str,
+    provider: str,
+    model: str,
+    workspace: str,
+    role_goal: str,
+    backstory: str,
+    skills: list[str],
+    var_overrides: dict,
+    setup_dir: Path,
+):
+    adapter_cli.ensure_dirs()
+    existing = adapter_cli.get_container(agent_id)
     if existing and existing.get("status") != "destroyed":
         print(f"[agentia] Container '{agent_id}' already exists ({existing.get('status')})")
         print(f"  Run: agentia destroy {agent_id} first")
         return
 
-    adapter.create_container(image_name, agent_id)
-    meta = adapter.get_container(agent_id)
+    adapter_cli.create_container(
+        image_name, agent_id,
+        adapter=adapter,
+        provider=provider,
+        model=model,
+    )
+    meta = adapter_cli.get_container(agent_id)
     if port:
         meta["agent_port"] = port
-    adapter.save_container(agent_id, meta)
-    adapter.start_container(agent_id)
+    adapter_cli.save_container(agent_id, meta)
+
+    context = _build_context(
+        agent_id=agent_id,
+        adapter=adapter,
+        provider=provider,
+        model=model,
+        workspace=workspace,
+        role_goal=role_goal,
+        backstory=backstory,
+        skills=skills,
+        var_overrides=var_overrides,
+    )
+
+    config_path = adapter_cli.container_dir(agent_id) / "config" / "agent.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _render_templates(
+            adapter=adapter,
+            context=context,
+            config_output=config_path,
+            workspace=Path(workspace),
+            setup_dir=setup_dir,
+        )
+    except Exception as e:
+        print(f"[agentia] Warning: template rendering failed: {e}")
+
+    adapter_cli.start_container(
+        agent_id,
+        adapter=adapter,
+        provider=provider,
+        model=model,
+    )
     print(f"[agentia] Created and started '{agent_id}' from '{image_name}' (port {meta.get('agent_port')})")
 
-def cmd_agents(adapter: DockerAdapter):
-    """List all agents with their endpoints."""
-    containers = adapter.list_containers()
+
+def cmd_agents(adapter_cli: DockerAdapter):
+    containers = adapter_cli.list_containers()
     if not containers:
         print("No agents")
         return
     for c in containers:
-        status = adapter.container_status(c["id"])
+        status = adapter_cli.container_status(c["id"])
         if status == "destroyed":
             continue
         port = c.get("agent_port", "?")
         print(f"  {c['id']}: {status}  localhost:{port}")
 
-def cmd_ps(adapter: DockerAdapter, all_: bool):
-    containers = adapter.list_containers(all_)
+
+def cmd_ps(adapter_cli: DockerAdapter, all_: bool):
+    containers = adapter_cli.list_containers(all_)
     if not containers:
         print("No containers")
         return
     for c in containers:
-        status = adapter.container_status(c["id"])
+        status = adapter_cli.container_status(c["id"])
         if status == "destroyed" and not all_:
             continue
         print(f"  {c['id']}: {status}  (from {c.get('image', '?')})")
 
-def cmd_start(adapter: DockerAdapter, agent_id: str):
-    adapter.start_existing_container(agent_id)
 
-def cmd_stop(adapter: DockerAdapter, agent_id: str):
-    adapter.stop_container(agent_id)
+def cmd_start(adapter_cli: DockerAdapter, agent_id: str):
+    adapter_cli.start_existing_container(agent_id)
 
-def cmd_destroy(adapter: DockerAdapter, agent_id: str):
-    adapter.destroy_container(agent_id)
 
-def cmd_status(adapter: DockerAdapter, agent_id: str):
-    meta = adapter.get_container(agent_id)
+def cmd_stop(adapter_cli: DockerAdapter, agent_id: str):
+    adapter_cli.stop_container(agent_id)
+
+
+def cmd_destroy(adapter_cli: DockerAdapter, agent_id: str):
+    adapter_cli.destroy_container(agent_id)
+
+
+def cmd_status(adapter_cli: DockerAdapter, agent_id: str):
+    meta = adapter_cli.get_container(agent_id)
     if not meta:
         print(f"Container '{agent_id}' not found")
         return
-    status = adapter.container_status(agent_id)
+    status = adapter_cli.container_status(agent_id)
     print(f"Container: {agent_id}")
     print(f"  Image: {meta.get('image', '?')}")
     print(f"  Status: {status}")
-    print(f"  Harness: {meta.get('harness', '?')}")
+    print(f"  Adapter: {meta.get('adapter', '?')}")
     if meta.get("agent_port"):
         print(f"  Port: {meta.get('agent_port')}")
     print(f"  Created: {meta.get('created_at', '?')}")
 
-def cmd_send(adapter: DockerAdapter, agent_id: str, message: str):
-    """Send a message to an agent via AgentServer HTTP."""
-    status = adapter.container_status(agent_id)
+
+def cmd_send(adapter_cli: DockerAdapter, agent_id: str, message: str):
+    status = adapter_cli.container_status(agent_id)
     if status != "running":
         print(f"[agentia] Container '{agent_id}' is not running ({status})")
         return
     try:
-        response = adapter.send_to_agent(agent_id, message)
+        response = adapter_cli.send_to_agent(agent_id, message)
         print(response)
     except TimeoutError as e:
         print(f"[agentia] {e}")
     except Exception as e:
         print(f"[agentia] Error: {e}")
 
-def cmd_logs(adapter: DockerAdapter, agent_id: str):
+
+def cmd_logs(adapter_cli: DockerAdapter, agent_id: str):
     container_name = f"agentia-{agent_id}"
     subprocess.run(["docker", "logs", "--tail", "50", container_name])
 
@@ -542,6 +698,108 @@ def cmd_logs(adapter: DockerAdapter, agent_id: str):
 # ─── Main CLI ────────────────────────────────────────────────────────────────
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="agentia",
+        description="agentia — Federated multi-agent container runtime.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
+
+    p_install = sub.add_parser("install", help="Setup agent runtime (render templates + install)")
+    p_install.add_argument("adapter", choices=["pi-agent", "openclaw"], help="Agent runtime adapter")
+    p_install.add_argument("--config", default="/etc/agentia/agent.json",
+                           help="Output path for config file")
+    p_install.add_argument("--agent-id", default="agent-001", help="Agent ID")
+    p_install.add_argument("--provider", default="minimax", help="LLM provider (e.g. minimax, anthropic)")
+    p_install.add_argument("--model", default="MiniMax-M2.7", help="Model name")
+    p_install.add_argument("--workspace", default="/workspace", help="Agent workspace path")
+    p_install.add_argument("--role-goal", default="", help="Agent role goal")
+    p_install.add_argument("--backstory", default="", help="Agent backstory")
+    p_install.add_argument("--skills", action="append", default=[], help="Skill name (can repeat)")
+    p_install.add_argument("--var", action="append", default=[], dest="vars",
+                           help="key=value template variable override")
+
+    p_agentserver = sub.add_parser("agentserver", help="Start AgentServer")
+
+    p_image = sub.add_parser("image", help="Image management (list/build/inspect/rm)")
+    p_image_sub = p_image.add_subparsers(dest="subcommand", metavar="<subcommand>")
+
+    p_image_list = p_image_sub.add_parser("list", help="List images")
+    p_image_build = p_image_sub.add_parser("build", help="Build an image")
+    p_image_build.add_argument("name", help="Image name")
+    p_image_build.add_argument("--from", dest="template", help="Path to workspace directory (required)")
+
+    p_image_inspect = p_image_sub.add_parser("inspect", help="Inspect an image")
+    p_image_inspect.add_argument("name", help="Image name")
+    p_image_rm = p_image_sub.add_parser("rm", help="Remove an image")
+    p_image_rm.add_argument("name", help="Image name")
+
+    p_create = sub.add_parser("create", help="Create and start an agent container")
+    p_create.add_argument("image", help="Image name")
+    p_create.add_argument("agent_id", help="Container/agent ID")
+    p_create.add_argument("--adapter", default="pi-agent", choices=["pi-agent", "openclaw"],
+                          help="Agent runtime adapter")
+    p_create.add_argument("--provider", default="minimax", help="LLM provider")
+    p_create.add_argument("--model", default="MiniMax-M2.7", help="Model name")
+    p_create.add_argument("--workspace", default="/workspace", help="Agent workspace path")
+    p_create.add_argument("--role-goal", default="", help="Agent role goal")
+    p_create.add_argument("--backstory", default="", help="Agent backstory")
+    p_create.add_argument("--skills", action="append", default=[], help="Skill name (can repeat)")
+    p_create.add_argument("--var", action="append", default=[], dest="vars",
+                          help="key=value template variable override")
+    p_create.add_argument("--template", help="Custom config template path")
+    p_create.add_argument("--port", type=int, default=None, help="Host port for AgentServer [auto-allocate]")
+
+    p_agents = sub.add_parser("agents", help="List all agents with endpoints")
+    p_ps = sub.add_parser("ps", help="List containers")
+    p_ps.add_argument("-a", "--all", dest="all_", action="store_true", help="Show all containers")
+    p_start = sub.add_parser("start", help="Start a container")
+    p_start.add_argument("agent_id", help="Container ID")
+    p_stop = sub.add_parser("stop", help="Stop a container")
+    p_stop.add_argument("agent_id", help="Container ID")
+    p_destroy = sub.add_parser("destroy", help="Destroy a container")
+    p_destroy.add_argument("agent_id", help="Container ID")
+    p_status = sub.add_parser("status", help="Show container status")
+    p_status.add_argument("agent_id", help="Container ID")
+    p_send = sub.add_parser("send", help="Send message to agent via AgentServer")
+    p_send.add_argument("agent_id", help="Container ID")
+    p_send.add_argument("message", nargs="...", help="Message to send")
+    p_logs = sub.add_parser("logs", help="Show container logs")
+    p_logs.add_argument("agent_id", help="Container ID")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 0
+
+    agentia_root = Path(__file__).parent
+    setup_dir = agentia_root / "setup"
+
+    if args.command == "install":
+        var_overrides = {}
+        for v in getattr(args, "vars", []):
+            if "=" in v:
+                k, val = v.split("=", 1)
+                var_overrides[k] = val
+        return cmd_install(
+            adapter=args.adapter,
+            config_path=args.config,
+            agent_id=args.agent_id,
+            provider=args.provider,
+            model=args.model,
+            workspace=args.workspace,
+            role_goal=args.role_goal,
+            backstory=args.backstory,
+            skills=args.skills,
+            var_overrides=var_overrides,
+            setup_dir=setup_dir,
+        )
+
+    if args.command == "agentserver":
+        cmd_agentserver()
+        return 1
+
     docker_check = subprocess.run(
         ["docker", "info"],
         capture_output=True, text=True, timeout=10
@@ -553,110 +811,63 @@ def main() -> int:
             "Please ensure:\n"
             "  1. Docker Desktop is installed and started\n"
             "  2. 'docker ps' works from the terminal\n"
-            "  3. You have permission to access the Docker socket\n"
             "\n"
             "Troubleshoot: https://docs.docker.com/desktop/\n",
             file=sys.stderr
         )
         return 1
 
-    parser = argparse.ArgumentParser(
-        prog="agentia",
-        description=(
-            "agentia — Federated multi-agent container runtime. "
-            "Agents run in isolated Docker containers with per-container OpenClaw config. "
-            "Host ~/.openclaw/ is never mounted. "
-            "See: https://github.com/wangsen992/agentia"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    sub = parser.add_subparsers(dest="command", metavar="<command>")
-
-    # Image subcommands
-    p_image = sub.add_parser("image", help="Image management (list/build/inspect/rm)")
-    p_image_sub = p_image.add_subparsers(dest="subcommand", metavar="<subcommand>")
-
-    p_image_list = p_image_sub.add_parser("list", help="List images")
-    p_image_build = p_image_sub.add_parser("build", help="Build an image")
-    p_image_build.add_argument("name", help="Image name (e.g. analyst, critic)")
-    p_image_build.add_argument("--from", dest="template", help="Path to workspace directory (required)")
-    p_image_inspect = p_image_sub.add_parser("inspect", help="Inspect an image")
-    p_image_inspect.add_argument("name", help="Image name")
-    p_image_rm = p_image_sub.add_parser("rm", help="Remove an image")
-    p_image_rm.add_argument("name", help="Image name")
-
-    # Container subcommands
-    p_create = sub.add_parser("create", help="Create and start an agent container")
-    p_create.add_argument("image", help="Image name")
-    p_create.add_argument("agent_id", help="Container/agent ID")
-    p_create.add_argument("--harness", default="agentserver",
-                          choices=["agentserver"],
-                          help="Harness: agentserver (default, HTTP-based messaging)")
-    p_create.add_argument("--port", type=int, default=None,
-                          help="Host port for AgentServer [default: auto-allocate]")
-
-    p_agents = sub.add_parser("agents", help="List all agents with endpoints")
-
-    p_ps = sub.add_parser("ps", help="List containers")
-    p_ps.add_argument("-a", "--all", dest="all_", action="store_true", help="Show all containers")
-
-    p_start = sub.add_parser("start", help="Start a container")
-    p_start.add_argument("agent_id", help="Container ID")
-
-    p_stop = sub.add_parser("stop", help="Stop a container")
-    p_stop.add_argument("agent_id", help="Container ID")
-
-    p_destroy = sub.add_parser("destroy", help="Destroy a container")
-    p_destroy.add_argument("agent_id", help="Container ID")
-
-    p_status = sub.add_parser("status", help="Show container status")
-    p_status.add_argument("agent_id", help="Container ID")
-
-    p_send = sub.add_parser("send", help="Send message to agent via AgentServer")
-    p_send.add_argument("agent_id", help="Container ID")
-    p_send.add_argument("message", nargs="...", help="Message to send")
-
-    p_logs = sub.add_parser("logs", help="Show container logs")
-    p_logs.add_argument("agent_id", help="Container ID")
-
-    args = parser.parse_args()
-
-    if not args.command:
-        parser.print_help()
-        return 0
-
-    adapter = DockerAdapter()
+    adapter_cli = DockerAdapter()
 
     if args.command == "image":
         if args.subcommand == "list":
-            cmd_image_list(adapter)
+            cmd_image_list(adapter_cli)
         elif args.subcommand == "build":
-            cmd_image_build(adapter, args.name, args.template)
+            cmd_image_build(adapter_cli, args.name, args.template)
         elif args.subcommand == "inspect":
-            cmd_image_inspect(adapter, args.name)
+            cmd_image_inspect(adapter_cli, args.name)
         elif args.subcommand == "rm":
-            cmd_image_rm(adapter, args.name)
+            cmd_image_rm(adapter_cli, args.name)
         else:
             p_image.print_help()
     elif args.command == "create":
-        cmd_create(adapter, args.image, args.agent_id, args.port)
+        var_overrides = {}
+        for v in getattr(args, "vars", []):
+            if "=" in v:
+                k, val = v.split("=", 1)
+                var_overrides[k] = val
+        cmd_create(
+            adapter_cli=adapter_cli,
+            image_name=args.image,
+            agent_id=args.agent_id,
+            port=args.port,
+            adapter=args.adapter,
+            provider=args.provider,
+            model=args.model,
+            workspace=args.workspace,
+            role_goal=args.role_goal,
+            backstory=args.backstory,
+            skills=args.skills,
+            var_overrides=var_overrides,
+            setup_dir=setup_dir,
+        )
     elif args.command == "agents":
-        cmd_agents(adapter)
+        cmd_agents(adapter_cli)
     elif args.command == "ps":
-        cmd_ps(adapter, args.all_)
+        cmd_ps(adapter_cli, args.all_)
     elif args.command == "start":
-        cmd_start(adapter, args.agent_id)
+        cmd_start(adapter_cli, args.agent_id)
     elif args.command == "stop":
-        cmd_stop(adapter, args.agent_id)
+        cmd_stop(adapter_cli, args.agent_id)
     elif args.command == "destroy":
-        cmd_destroy(adapter, args.agent_id)
+        cmd_destroy(adapter_cli, args.agent_id)
     elif args.command == "status":
-        cmd_status(adapter, args.agent_id)
+        cmd_status(adapter_cli, args.agent_id)
     elif args.command == "send":
         message = " ".join(args.message) if args.message else ""
-        cmd_send(adapter, args.agent_id, message)
+        cmd_send(adapter_cli, args.agent_id, message)
     elif args.command == "logs":
-        cmd_logs(adapter, args.agent_id)
+        cmd_logs(adapter_cli, args.agent_id)
     else:
         parser.print_help()
 

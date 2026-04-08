@@ -2,7 +2,7 @@
 Sync delivery pattern for AgentServer.
 
 Messages are delivered directly to the agent subprocess.
-The harness calls OpenClawAdapter.send() immediately and returns the response.
+The harness calls adapter.send() immediately and returns the response.
 """
 
 import time
@@ -17,7 +17,7 @@ class SyncDelivery:
     """
     Synchronous delivery pattern.
 
-    Messages are delivered directly to the OpenClawAdapter subprocess.
+    Messages are delivered directly to the agent subprocess.
     The harness calls adapter.send() immediately and returns the response.
     """
 
@@ -25,15 +25,29 @@ class SyncDelivery:
         self,
         agent_id: str,
         agent_timeout: int = 120,
+        adapter_type: str = "pi-agent",
+        adapter_provider: str = "minimax",
+        adapter_model: str = "MiniMax-M2.7",
+        adapter_workspace: str = "/workspace",
     ):
         self.agent_id = agent_id
         self.agent_timeout = agent_timeout
+        self._adapter_type = adapter_type
+        self._adapter_provider = adapter_provider
+        self._adapter_model = adapter_model
+        self._adapter_workspace = adapter_workspace
         self._adapter: Optional[AgentAdapter] = None
 
     def _ensure_adapter(self) -> AgentAdapter:
         """Lazily create and setup the agent adapter."""
         if self._adapter is None:
-            self._adapter = get_adapter(timeout=self.agent_timeout)
+            self._adapter = get_adapter(
+                runtime=self._adapter_type,
+                provider=self._adapter_provider,
+                model=self._adapter_model,
+                workspace=self._adapter_workspace,
+                timeout=self.agent_timeout,
+            )
             self._adapter.setup()
         return self._adapter
 
