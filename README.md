@@ -96,7 +96,12 @@ config = ModeratorConfig(
 mod = Moderator(config)
 mod.setup()
 mod.run()
-print(mod.summarize())
+
+# Save transcript to JSON file
+mod.save_transcript("transcripts/latest.json")
+
+# Or print to console
+mod.print_transcript()
 ```
 
 ---
