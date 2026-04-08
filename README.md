@@ -29,18 +29,19 @@ relay/backends/docker.py
 # 1. Build the generic agent image
 docker build -t agentia .
 
-# 2. Install pi-agent runtime inside a container
-docker run --rm agentia install pi-agent \
+# 2. Create the container and install pi-agent runtime
+docker create --name my-agent -p 18080:8080 agentia \
+    install pi-agent \
     --config /etc/agentia/agent.json \
     --provider minimax \
     --model MiniMax-M2.7 \
     --workspace /workspace
 
-# 3. Start AgentServer (runs inside the container)
-docker run -d --name my-agent agentia agentserver
+# 3. Start AgentServer (the install persists in the container)
+docker start my-agent
 
-# 4. Send a message from the host
-docker exec my-agent curl -s -X POST http://localhost:8080/message \
+# 4. Send a message
+curl -s -X POST http://localhost:18080/message \
     -H "Content-Type: application/json" \
     -d '{"content": "What can you do?"}'
 ```
