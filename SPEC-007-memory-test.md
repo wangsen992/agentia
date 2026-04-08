@@ -1,12 +1,14 @@
 # SPEC 007b: Gateway Self-Restart + Memory Infrastructure Test ✅ PASSED 2026-04-06
 
+**Note:** This test was conducted using the deprecated `gateway_harness`. The `gateway_harness` has since been replaced by `AgentServer`. The restart mechanism via HTTP control endpoint is now part of AgentServer.
+
 ## Objective
 Verify that a containerized OpenClaw agent can:
 1. Enable QMD + vector search memory infrastructure via config changes
 2. Trigger a gateway self-restart via the HTTP control endpoint
 3. Come back up with the upgraded config
 
-## Architecture
+## Architecture (historical - gateway_harness)
 
 ```
 Host                          Container (agentia-memory-test)
@@ -14,22 +16,22 @@ Host                          Container (agentia-memory-test)
 ~/.agentia/inbox/             →  /workspace/inbox/  (relay messages)
 
 agentia CLI (host)  ──inbox relay──►  agent inbox  →  poller  →  OpenClaw agent
-                                        │                          │
-                                        │                     Modifies config
-                                        │                     /root/.openclaw/
-                                        │                     openclaw.json
-                                        │                          │
-                                        ◄──response.jsonl───────────┤
-                                        │                          │
-                                        │                     curl POST to
-                                        │                     http://127.0.0.1:18790/restart
-                                        │                     (gwctl server in harness)
-                                        │                          │
-                                        ◄───gateway tears down─────┤
-                                              + restarts              │
+                                         │                          │
+                                         │                     Modifies config
+                                         │                     /root/.openclaw/
+                                         │                     openclaw.json
+                                         │                          │
+                                         ◄──response.jsonl───────────┤
+                                         │                          │
+                                         │                     curl POST to
+                                         │                     http://127.0.0.1:18790/restart
+                                         │                     (gwctl server in harness)
+                                         │                          │
+                                         ◄───gateway tears down─────┤
+                                               + restarts              │
 ```
 
-## Steps
+## Steps (historical)
 
 ### Phase 1: Setup ✅
 - [x] Build agentia image with latest gateway_harness.py

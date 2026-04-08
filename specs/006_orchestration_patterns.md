@@ -77,12 +77,12 @@ class ConversationResult:
 
 ## What to Build Next (SPEC 007)
 
-**Moderator + InboxRelay integration test — end to end**
+**Moderator + AgentServer integration test — end to end**
 
-Two agent containers + moderator + inbox relay, all talking to each other:
-1. Moderator uses InboxRelay to send prompts to each agent
-2. Each agent runs as inbox_poller (agent mode)
-3. Poller receives message, calls OpenClaw, returns response via correlation ID
+Two agent containers + moderator + AgentServer, all talking to each other:
+1. Moderator uses DockerBackend to send prompts to each agent's AgentServer
+2. Each agent runs AgentServer (sync or inbox delivery mode)
+3. AgentServer receives message, calls OpenClaw via AgentAdapter, returns response
 4. Moderator collects responses, builds history, sends next prompt
 5. After N turns: Moderator returns ConversationResult
 

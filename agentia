@@ -32,22 +32,42 @@ from pathlib import Path
 
 DEFAULT_REGISTRY = Path.home() / ".agentia"
 DEFAULT_IMAGE = "agentia"
+DEFAULT_PORT_RANGE = (18000, 18100)
 
-_next_agent_port = 18080
+
+def _load_agentia_config() -> dict:
+    config_file = DEFAULT_REGISTRY / "agentia.json"
+    if config_file.exists():
+        return json.loads(config_file.read_text())
+    return {"port_range": {"start": 18000, "end": 18100}, "next_port": 18000}
+
+
+def _save_agentia_config(config: dict):
+    config_file = DEFAULT_REGISTRY / "agentia.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps(config, indent=2))
 
 
 def _allocate_agent_port() -> int:
-    """Allocate a port starting at 18080, checking for Docker collisions."""
-    global _next_agent_port
-    while True:
-        port = _next_agent_port
-        _next_agent_port += 1
+    """Allocate a port from configured range, checking for Docker collisions."""
+    config = _load_agentia_config()
+    port_range = config.get("port_range", {"start": 18000, "end": 18100})
+    start = port_range.get("start", 18000)
+    end = port_range.get("end", 18100)
+    port = config.get("next_port", start)
+
+    while port <= end:
         result = subprocess.run(
             ["docker", "ps", "--format", "{{.Ports}}"],
             capture_output=True, text=True
         )
         if str(port) not in result.stdout:
+            config["next_port"] = port + 1
+            _save_agentia_config(config)
             return port
+        port += 1
+
+    raise RuntimeError(f"No available ports in range {start}-{end}")
 
 
 # ─── Registry ────────────────────────────────────────────────────────────────
@@ -230,8 +250,6 @@ class DockerAdapter(AgentAdapter):
         if not meta:
             raise ValueError(f"Container '{agent_id}' not found")
 
-        harness = meta.get("harness", "agentserver")
-
         self.inbox_dir.mkdir(parents=True, exist_ok=True)
         inbox_file = self.inbox_dir / f"{agent_id}.jsonl"
         inbox_file.touch(exist_ok=True)
@@ -250,67 +268,32 @@ class DockerAdapter(AgentAdapter):
 
         gateway_token = "multi-agent-relay-token"
 
-        if harness == "agentserver":
-            agent_port = meta.get("agent_port") or _allocate_agent_port()
-            if "agent_port" not in meta:
-                meta["agent_port"] = agent_port
-                self.save_container(agent_id, meta)
+        agent_port = meta.get("agent_port") or _allocate_agent_port()
+        if "agent_port" not in meta:
+            meta["agent_port"] = agent_port
+            self.save_container(agent_id, meta)
 
-            cmd = [
-                "docker", "run", "-d",
-                "--name", container_name,
-                "--restart", "unless-stopped",
-                "--network", "bridge",
-                "-p", f"{agent_port}:8080",
-                "-v", f"{inbox_str}:/workspace/inbox",
-                "-v", f"{inbox_str}/responses:/workspace/inbox/responses",
-                "-v", f"{ws_dir}:/workspace-src",
-                "-v", f"{oc_dir}:/root/.openclaw",
-                "-e", f"AGENT_ID={agent_id}",
-                "-e", f"OPENCLAW_GATEWAY_TOKEN={gateway_token}",
-                "-e", f"OPENCLAW_IDENTITY_TOKEN={gateway_token}",
-                "--entrypoint", "python3",
-                self.image,
-                "/workspace/agent_side/server.py",
-                "--agent-id", agent_id,
-                "--host", "0.0.0.0",
-                "--port", "8080",
-                "--delivery", "sync",
-            ]
-        elif harness == "inbox":
-            cmd = [
-                "docker", "run", "-d",
-                "--name", container_name,
-                "--restart", "unless-stopped",
-                "--network", "bridge",
-                "-v", f"{inbox_str}:/workspace/inbox",
-                "-v", f"{ws_dir}:/workspace-src",
-                "-v", f"{oc_dir}:/root/.openclaw",
-                "-e", f"OPENCLAW_GATEWAY_TOKEN={gateway_token}",
-                "-e", f"OPENCLAW_IDENTITY_TOKEN={gateway_token}",
-                "--entrypoint", "/workspace/runners/agent_entrypoint.sh",
-                self.image,
-                harness,
-                "--agent-id", agent_id,
-                "--poll-interval", "2",
-            ]
-        else:
-            cmd = [
-                "docker", "run", "-d",
-                "--name", container_name,
-                "--restart", "unless-stopped",
-                "--network", "bridge",
-                "-v", f"{inbox_str}:/workspace/inbox",
-                "-v", f"{ws_dir}:/workspace-src",
-                "-v", f"{oc_dir}:/root/.openclaw",
-                "-e", f"OPENCLAW_GATEWAY_TOKEN={gateway_token}",
-                "-e", f"OPENCLAW_IDENTITY_TOKEN={gateway_token}",
-                "--entrypoint", "/workspace/runners/agent_entrypoint.sh",
-                self.image,
-                harness,
-                "--agent-id", agent_id,
-                "--poll-interval", "2",
-            ]
+        cmd = [
+            "docker", "run", "-d",
+            "--name", container_name,
+            "--restart", "unless-stopped",
+            "--network", "bridge",
+            "-p", f"{agent_port}:8080",
+            "-v", f"{inbox_str}:/workspace/inbox",
+            "-v", f"{inbox_str}/responses:/workspace/inbox/responses",
+            "-v", f"{ws_dir}:/workspace-src",
+            "-v", f"{oc_dir}:/root/.openclaw",
+            "-e", f"AGENT_ID={agent_id}",
+            "-e", f"OPENCLAW_GATEWAY_TOKEN={gateway_token}",
+            "-e", f"OPENCLAW_IDENTITY_TOKEN={gateway_token}",
+            "--entrypoint", "python3",
+            self.image,
+            "/workspace/agent_side/server.py",
+            "--agent-id", agent_id,
+            "--host", "0.0.0.0",
+            "--port", "8080",
+            "--delivery", "sync",
+        ]
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
@@ -424,23 +407,19 @@ def cmd_image_list(adapter: DockerAdapter):
         print(f"  {img}:{version}  [{framework}]")
 
 def cmd_image_build(adapter: DockerAdapter, name: str, template: str = None):
-    """Build an image from workspaces/roles/<name>/ or an override path."""
-    script_dir = Path(__file__).parent
-    roles_dir = script_dir / "workspaces" / "roles"
+    """Build an image from a workspace directory."""
+    if not template:
+        print("[agentia] Error: --from <path> is required")
+        print("  Usage: agentia image build <name> --from <workspace-path>")
+        return
+
+    src = Path(template)
+    if not src.exists():
+        print(f"[agentia] Workspace '{src}' not found.")
+        return
 
     image_dir = adapter.image_dir(name)
     image_dir.mkdir(parents=True, exist_ok=True)
-
-    if template:
-        src = Path(template)
-    else:
-        src = roles_dir / name
-
-    if not src.exists():
-        print(f"[agentia] Workspace '{src}' not found.")
-        print(f"  Available roles: {[d.name for d in roles_dir.iterdir() if d.is_dir()]}")
-        print(f"  Or use --from <path> to specify a custom workspace.")
-        return
 
     (image_dir / "workspace").mkdir(exist_ok=True)
     for item in src.iterdir():
@@ -478,7 +457,7 @@ def cmd_image_rm(adapter: DockerAdapter, name: str):
 
 # ─── Container Commands ───────────────────────────────────────────────────────
 
-def cmd_create(adapter: DockerAdapter, image_name: str, agent_id: str, harness: str, port: int | None):
+def cmd_create(adapter: DockerAdapter, image_name: str, agent_id: str, port: int | None):
     adapter.ensure_dirs()
     existing = adapter.get_container(agent_id)
     if existing and existing.get("status") != "destroyed":
@@ -488,13 +467,11 @@ def cmd_create(adapter: DockerAdapter, image_name: str, agent_id: str, harness: 
 
     adapter.create_container(image_name, agent_id)
     meta = adapter.get_container(agent_id)
-    meta["harness"] = harness
     if port:
         meta["agent_port"] = port
     adapter.save_container(agent_id, meta)
     adapter.start_container(agent_id)
-    port_info = f" (port {meta.get('agent_port')})" if harness == "agentserver" else ""
-    print(f"[agentia] Created and started '{agent_id}' from '{image_name}' (harness={harness}){port_info}")
+    print(f"[agentia] Created and started '{agent_id}' from '{image_name}' (port {meta.get('agent_port')})")
 
 def cmd_agents(adapter: DockerAdapter):
     """List all agents with their endpoints."""
@@ -506,12 +483,8 @@ def cmd_agents(adapter: DockerAdapter):
         status = adapter.container_status(c["id"])
         if status == "destroyed":
             continue
-        harness = c.get("harness", "?")
-        if harness == "agentserver":
-            port = c.get("agent_port", "?")
-            print(f"  {c['id']}: {status}  localhost:{port}")
-        else:
-            print(f"  {c['id']}: {status}  (harness={harness})")
+        port = c.get("agent_port", "?")
+        print(f"  {c['id']}: {status}  localhost:{port}")
 
 def cmd_ps(adapter: DockerAdapter, all_: bool):
     containers = adapter.list_containers(all_)
@@ -617,8 +590,8 @@ def main() -> int:
     p_create.add_argument("image", help="Image name")
     p_create.add_argument("agent_id", help="Container/agent ID")
     p_create.add_argument("--harness", default="agentserver",
-                          choices=["agentserver", "inbox", "gateway"],
-                          help="Harness: agentserver (HTTP, default), inbox, gateway")
+                          choices=["agentserver"],
+                          help="Harness: agentserver (default, HTTP-based messaging)")
     p_create.add_argument("--port", type=int, default=None,
                           help="Host port for AgentServer [default: auto-allocate]")
 
@@ -666,7 +639,7 @@ def main() -> int:
         else:
             p_image.print_help()
     elif args.command == "create":
-        cmd_create(adapter, args.image, args.agent_id, args.harness, args.port)
+        cmd_create(adapter, args.image, args.agent_id, args.port)
     elif args.command == "agents":
         cmd_agents(adapter)
     elif args.command == "ps":

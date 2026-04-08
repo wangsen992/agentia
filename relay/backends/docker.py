@@ -2,7 +2,7 @@
 DockerBackend — HostContainerBackend implementation using HTTP to AgentServer.
 
 Agent endpoints are configured via static config dict:
-    { agent_id: AgentEndpoint(host, port, container_name) }
+    { agent_id: AgentEndpoint(agent_id, host, port) }
 
 Uses requests library for HTTP calls to AgentServer endpoints.
 """
@@ -70,6 +70,7 @@ class DockerBackend(HostContainerBackend):
             return None
 
         correlation_id = message.correlation_id or str(uuid.uuid4())
+        message.correlation_id = correlation_id
 
         payload = {
             "content": message.content,
@@ -185,11 +186,11 @@ class DockerBackend(HostContainerBackend):
                 results[agent_id] = False
                 continue
 
-            correlation_id = message.correlation_id or str(uuid.uuid4())
+            cid = str(uuid.uuid4())
             payload = {
                 "content": message.content,
                 "from_agent": message.from_agent or "moderator",
-                "correlation_id": correlation_id,
+                "correlation_id": cid,
             }
 
             try:

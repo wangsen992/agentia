@@ -14,59 +14,44 @@ cd agentia
 docker build -t agentia .
 ```
 
-### 2. Start AgentServer (Agent Side)
+### 2. Create and Start an Agent
 
-Each agent runs `AgentServer` which exposes an HTTP interface for messaging:
-
-```bash
-# Start AgentServer in a container (sync delivery — direct request/response)
-docker run -d --name my-agent \
-  -e AGENT_ID=my-agent \
-  -p 18080:8080 \
-  --entrypoint python3 \
-  agentia \
-  /workspace/agent_side/server.py \
-    --agent-id=my-agent --host=0.0.0.0 --port=8080 --delivery=sync
-```
-
-Or with inbox delivery (async, background processing):
+Use the `agentia` CLI to create and manage agent containers:
 
 ```bash
-docker run -d --name my-agent \
-  -e AGENT_ID=my-agent \
-  -p 18080:8080 \
-  --entrypoint python3 \
-  agentia \
-  /workspace/agent_side/server.py \
-    --agent-id=my-agent --host=0.0.0.0 --port=8080 --delivery=inbox
+# Build an agent image (requires --from flag pointing to workspace)
+agentia image build analyst --from /path/to/workspace
+
+# Create and start an agent
+agentia create analyst my-analyst
+
+# List all agents
+agentia agents
 ```
 
-### 3. Send a Message (Host Side)
-
-From the host, use `DockerBackend` to communicate with AgentServer:
+### 3. Send a Message
 
 ```python
 from relay.backends import DockerBackend, AgentEndpoint
 from relay.base import RelayMessage
 
 backend = DockerBackend({
-    "my-agent": AgentEndpoint("my-agent", "localhost", 18080),
+    "my-analyst": AgentEndpoint("my-analyst", "localhost", 18080),
 })
 
-# Sync message — blocks until agent responds
-msg = RelayMessage(to_agent="my-agent", content="What is 2+2?", from_agent="user")
-response = backend.send_message(msg, "my-agent")
-print(response)  # "2+2 equals 4"
+msg = RelayMessage(to_agent="my-analyst", content="What is 2+2?", from_agent="user")
+response = backend.send_message(msg, "my-analyst")
+print(response)
 
-# Async message — fire and forget
-backend.send_message_async(msg, "my-agent")
+backend.close()
 ```
 
 ### 4. Multi-Agent with Moderator
 
+See `examples/moderator.py` for a complete example:
+
 ```python
-from relay.moderator import Moderator, ModeratorConfig, AgentConfig
-from relay.exec_relay import ExecRelay
+from examples.moderator import Moderator, ModeratorConfig, AgentConfig
 
 config = ModeratorConfig(
     agents=[
@@ -75,7 +60,6 @@ config = ModeratorConfig(
             name="Analyst",
             role="Research analyst",
             system_prompt="You are a research analyst.",
-            ws_url="docker://analyst",
             agent_host="localhost",
             agent_port=18081,
         ),
@@ -84,7 +68,6 @@ config = ModeratorConfig(
             name="Critic",
             role="Critical reviewer",
             system_prompt="You are a critical reviewer.",
-            ws_url="docker://critic",
             agent_host="localhost",
             agent_port=18082,
         ),
@@ -96,49 +79,7 @@ config = ModeratorConfig(
 mod = Moderator(config)
 mod.setup()
 mod.run()
-
-# Save transcript to JSON file
-mod.save_transcript("transcripts/latest.json")
-
-# Or print to console
 mod.print_transcript()
-```
-
-### 5. Agentia CLI (AgentServer)
-
-The `agentia` CLI manages agent containers with AgentServer:
-
-```bash
-# Build an agent image
-agentia image build analyst
-
-# Create and start an agent (uses AgentServer by default)
-agentia create analyst my-analyst
-
-# List all agents with their endpoints
-agentia agents
-
-# Send a message to an agent
-agentia send my-analyst "What is 2+2?"
-
-# Check status
-agentia status my-analyst
-
-# View logs
-agentia logs my-analyst
-
-# Stop and destroy
-agentia stop my-analyst
-agentia destroy my-analyst
-```
-
-**Options:**
-```bash
-# Specify a custom port
-agentia create analyst my-analyst --port 19000
-
-# Use legacy inbox harness instead
-agentia create analyst my-analyst --harness inbox
 ```
 
 ---
@@ -148,21 +89,17 @@ agentia create analyst my-analyst --harness inbox
 ```
 Host side:
 ┌──────────────────────────────────────────────────────────────┐
-│ BaseRelay (multi-agent routing, broadcast)                     │
-│   ↓                                                           │
-│ HostContainerBackend (Docker / SSH — pure transport)            │
-│   ↓                                                           │
-│ Network (HTTP to AgentServer)                                  │
+│  DockerBackend / SSHBackend (HostContainerBackend)            │
+│    ↓                                                         │
+│  Network (HTTP to AgentServer)                               │
 └──────────────────────────────────────────────────────────────┘
 
 Agent side (inside container):
 ┌──────────────────────────────────────────────────────────────┐
-│ AgentServer (HTTP/WebSocket — control plane + messaging plane)  │
-│   ├── Control: GET/PUT/PATCH /config, GET /status, POST /restart │
-│   ├── Messaging: POST /message, POST /message/async, GET /response/{id} │
-│   └── Harness (reads inbox, calls agent subprocess, writes response) │
-│   ↓                                                           │
-│ AgentAdapter → Agent process (OpenClaw)                        │
+│  AgentServer                                                 │
+│    ├── Control: GET/PUT/PATCH /config, GET /status, POST /restart │
+│    ├── Messaging: POST /message, POST /message/async, GET /response/{id} │
+│    └── Harness → AgentAdapter → OpenClaw subprocess          │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -170,16 +107,61 @@ Agent side (inside container):
 
 | Layer | Responsibility | Files |
 |-------|----------------|-------|
-| **BaseRelay** | Multi-agent routing, broadcast, connection management | `relay/base.py` |
-| **HostContainerBackend** | Adapts to deployment environment | `relay/backends/` |
+| **HostContainerBackend** | HTTP transport to AgentServer (Docker/SSH) | `relay/backends/` |
 | **AgentServer** | Delivery patterns, HTTP interface, owns AgentAdapter lifecycle | `agent_side/` |
 | **AgentAdapter** | Per-message send/receive contract | `agents/adapters/` |
 
 ---
 
+## Transport Backends
+
+### DockerBackend (HTTP to AgentServer)
+
+```python
+from relay.backends import DockerBackend, AgentEndpoint
+
+backend = DockerBackend({
+    "agent-a": AgentEndpoint("agent-a", "localhost", 18080),
+    "agent-b": AgentEndpoint("agent-b", "localhost", 18081),
+})
+
+# Sync send — blocks until response
+response = backend.send_message(msg, "agent-a")
+
+# Async send — fire and forget
+backend.send_message_async(msg, "agent-a")
+
+# Broadcast to multiple agents
+backend.broadcast(RelayMessage(to_agents=["agent-a", "agent-b"], content="Hello"))
+
+# Check status
+status = backend.get_status("agent-a")
+print(status)  # {"status": "ready", "ready": True, "uptime": 123}
+
+backend.close()
+```
+
+### SSHBackend (SSH + curl to remote AgentServer)
+
+```python
+from relay.backends import SSHBackend, AgentEndpoint
+
+backend = SSHBackend(
+    endpoints={
+        "agent-remote": AgentEndpoint("agent-remote", "user@ssh.example.com", 8080),
+    },
+    ssh_user="root",
+)
+
+response = backend.send_message(msg, "agent-remote")
+backend.close()
+```
+
+---
+
 ## AgentServer API
 
-AgentServer runs on the agent side and exposes these endpoints:
+AgentServer runs inside each agent container and exposes these endpoints:
 
 ### Control Plane
 
@@ -211,35 +193,13 @@ curl -X POST http://localhost:18080/message \
   -H "Content-Type: application/json" \
   -d '{"content":"What is 2+2?"}'
 
-# Switch to sync delivery
+# Switch delivery mode
 curl -X PATCH http://localhost:18080/config \
   -H "Content-Type: application/json" \
-  -d '{"delivery":"sync"}'
+  -d '{"delivery":"inbox"}'
 ```
 
 See [SPEC 009](./specs/009_agentserver_api.md) for full API documentation.
-
----
-
-## Current Status
-
-**Phase 1-5 — AgentServer Architecture: DONE**
-- `HostContainerBackend` interface + `DockerBackend` + `SSHBackend` ✅
-- `AgentServer` with inbox + sync delivery patterns ✅
-- `ExecRelay` / `InboxRelay` refactored to use `DockerBackend` ✅
-- `Moderator` cleaned up (no more `isinstance` checks) ✅
-- `gateway_harness` deprecated in favor of `AgentServer` ✅
-
-**What's Working (2026-04-07)**
-- AgentServer HTTP endpoints (`/message`, `/message/async`, `/response/{id}`, `/config`, `/status`, `/restart`) ✅
-- DockerBackend → AgentServer communication ✅
-- Inbox delivery pattern (file-based, background polling) ✅
-- Sync delivery pattern (direct subprocess call) ✅
-- AgentServer config persistence (`~/.agentia/agent.json`) ✅
-
-**Next**
-- WebSocketBackend for persistent connections (SPEC 005)
-- Multi-agent end-to-end test with Moderator + 2x AgentServer
 
 ---
 
@@ -247,25 +207,34 @@ See [SPEC 009](./specs/009_agentserver_api.md) for full API documentation.
 
 ```
 relay/
-├── base.py              ← BaseRelay ABC + RelayMessage
-├── moderator.py          ← Conversation orchestration
-├── backends/
-│   ├── base.py          ← HostContainerBackend interface
-│   ├── docker.py        ← HTTP client to AgentServer
-│   └── ssh.py           ← SSH tunnel + curl to AgentServer
-└── patterns/            ← (legacy, now in agent_side/)
+├── __init__.py          ← DockerBackend, SSHBackend, HostContainerBackend, AgentEndpoint
+├── base.py              ← RelayMessage dataclass
+└── backends/
+    ├── __init__.py
+    ├── base.py          ← HostContainerBackend interface
+    ├── docker.py        ← HTTP client to AgentServer
+    └── ssh.py           ← SSH + curl client to AgentServer
 
 agent_side/
-├── server.py            ← AgentServer HTTP/WebSocket server
+├── server.py            ← AgentServer HTTP server
 ├── config.py            ← Config management
-├── harness.py           ← Internal harness (delivery pattern runner)
+├── harness.py           ← Internal harness
 └── patterns/
-    ├── inbox.py         ← Inbox delivery pattern
-    └── sync.py          ← Sync delivery pattern
+    ├── inbox.py         ← File-based inbox delivery
+    └── sync.py          ← Direct subprocess delivery
 
-harnesses/
-├── gateway_harness.py   ← DEPRECATED — use AgentServer instead
-└── ...
+agents/
+└── adapters/
+    ├── __init__.py      ← AgentAdapter, get_adapter()
+    ├── base.py          ← AgentAdapter ABC
+    ├── factory.py       ← Adapter factory
+    └── openclaw.py      ← OpenClaw implementation
+
+examples/
+└── moderator.py         ← Multi-agent orchestration example
+
+containers/
+└── config-sanitized/   ← Isolated OpenClaw config (no API keys)
 ```
 
 ---
@@ -283,9 +252,8 @@ harnesses/
 - Deployment-agnostic — works with Docker, SSH, cloud hosts alike
 
 ### Delivery Patterns (AgentServer-side)
-- **Inbox**: Messages queued in file; harness polls; response written to correlation file
 - **Sync**: Message delivered directly; harness calls subprocess; response returned immediately
-- **Stream**: Deferred (SSE-based streaming)
+- **Inbox**: Messages queued in file; harness polls; response written to correlation file
 
 ---
 
@@ -296,7 +264,6 @@ harnesses/
 | 001 | done | Repository structure |
 | 002 | done | OpenClaw agent adapter |
 | 003 | done | Adapter Dockerfiles |
-| 004 | done | Observability layer |
 | 005 | done | Relay/Inbox architecture (AgentServer refactor) |
 | 006 | done | Orchestration patterns decision |
 | 007 | done | Agent provision + workspace |

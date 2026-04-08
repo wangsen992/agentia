@@ -1,8 +1,7 @@
 """
 Internal harness for AgentServer.
 
-Runs the delivery pattern in a background thread.
-Absorbed from gateway_harness's InboxPoller.
+Runs the delivery pattern (inbox or sync) in a background thread.
 """
 
 import threading

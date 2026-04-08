@@ -1,8 +1,8 @@
 """
 HostContainerBackend — abstract interface for host-side transport adapters.
 
-Adapts BaseRelay calls to AgentServer HTTP/WebSocket endpoints.
-Each backend implementation (Docker, SSH, WebSocket) maps this interface
+Adapts host-side calls to AgentServer HTTP endpoints.
+Each backend implementation (Docker, SSH) maps this interface
 to its specific transport mechanism.
 """
 
@@ -20,7 +20,6 @@ class AgentEndpoint:
     agent_id: str
     host: str
     port: int
-    container_name: Optional[str] = None
 
     def url(self, path: str = "") -> str:
         return f"http://{self.host}:{self.port}{path}"
@@ -30,8 +29,9 @@ class HostContainerBackend(ABC):
     """
     Abstract base for host-side transport adapters.
 
-    Adapts BaseRelay calls to AgentServer endpoints.
-    Implementations: DockerBackend, SSHBackend, WebSocketBackend.
+    Adapts host-side calls to AgentServer endpoints.
+    Implementations: DockerBackend, SSHBackend.
+    (WebSocketBackend — deferred)
     """
 
     @abstractmethod

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Moderator — conversation orchestration layer using BaseRelay.
+Moderator — multi-agent conversation orchestration example.
 
-Refactored to work with any BaseRelay implementation
-(ExecRelay, InboxRelay, WebSocketRelay) without isinstance checks.
+This is an EXAMPLE SCRIPT demonstrating how to orchestrate
+multi-agent conversations using DockerBackend directly.
 
 Usage:
-    from relay.moderator import Moderator, ModeratorConfig, AgentConfig
+    from examples.moderator import Moderator, ModeratorConfig, AgentConfig
     config = ModeratorConfig(...)
     mod = Moderator(config)
     mod.setup()
     mod.run()
-    print(mod.transcript)
+    mod.print_transcript()
 """
 
 import json
@@ -20,31 +20,24 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .base import BaseRelay, RelayMessage
-from .exec_relay import ExecRelay
+from relay.base import RelayMessage
+from relay.backends import DockerBackend, AgentEndpoint
 
 logger = logging.getLogger("moderator")
 
 
 @dataclass
 class AgentConfig:
-    """Configuration for a single agent in the conversation."""
-
     id: str
     name: str
     role: str
     system_prompt: str
-    ws_url: str
-    token: str = "multi-agent-gateway-token"
-    container_name: Optional[str] = None
-    agent_host: Optional[str] = None
-    agent_port: Optional[int] = None
+    agent_host: str = "localhost"
+    agent_port: int = 8080
 
 
 @dataclass
 class ModeratorConfig:
-    """Configuration for the entire moderated conversation."""
-
     agents: list[AgentConfig]
     topic: str
     max_turns: int = 6
@@ -54,13 +47,10 @@ class ModeratorConfig:
     moderator_injects: bool = False
     stop_condition: str = "fixed-turns"
     intro_message: str = ""
-    relay: Optional[BaseRelay] = None
 
 
 @dataclass
 class TurnRecord:
-    """A single turn in the conversation."""
-
     turn: int
     agent_id: str
     agent_name: str
@@ -70,59 +60,25 @@ class TurnRecord:
 
 
 class Moderator:
-    """
-    Orchestrates a multi-agent conversation.
-
-    Works with any BaseRelay implementation.
-    """
-
     def __init__(self, config: ModeratorConfig):
         self.config = config
         self._setup_done = False
         self._current_agent_index = 0
-
-        if config.relay is not None:
-            self._relay = config.relay
-        else:
-            self._relay = self._create_relay_for_config(config)
-
+        self._backend = self._create_backend(config)
         self.turns: list[TurnRecord] = []
 
-    def _create_relay_for_config(self, config: ModeratorConfig):
-        if not config.agents:
-            raise ValueError("No agents configured")
-
-        first_url = config.agents[0].ws_url
-        if (
-            first_url.startswith("docker://")
-            or first_url.startswith("http://")
-            or first_url.startswith("https://")
-        ):
-            relay = ExecRelay()
-            for agent in config.agents:
-                container = agent.container_name or agent.ws_url.replace(
-                    "docker://", ""
-                ).replace("http://", "").replace("https://", "")
-                relay.connect(
-                    agent.id,
-                    container_name=container,
-                    name=agent.name,
-                    role=agent.role,
-                    system_prompt=agent.system_prompt,
-                    agent_host=agent.agent_host or "localhost",
-                    agent_port=agent.agent_port or 8080,
-                )
-            return relay
-        else:
-            from .websocket_relay import WebSocketRelay
-
-            relay = WebSocketRelay(timeout=90.0)
-            for agent in config.agents:
-                relay.connect(agent.id, agent.ws_url, token=agent.token)
-            return relay
+    def _create_backend(self, config: ModeratorConfig) -> DockerBackend:
+        endpoints = {
+            agent.id: AgentEndpoint(
+                agent_id=agent.id,
+                host=agent.agent_host,
+                port=agent.agent_port,
+            )
+            for agent in config.agents
+        }
+        return DockerBackend(endpoints)
 
     def setup(self):
-        """Set up all agents and send their system prompts."""
         logger.info(f"Setting up {len(self.config.agents)} agents...")
 
         intro = (
@@ -137,7 +93,7 @@ class Moderator:
                 from_agent="moderator",
                 metadata={"type": "system"},
             )
-            response = self._relay.send(setup_msg)
+            response = self._backend.send_message(setup_msg, agent.id)
             logger.info(f"  {agent.id} setup response: {str(response)[:100]}")
 
             msg = RelayMessage(
@@ -146,7 +102,7 @@ class Moderator:
                 from_agent="moderator",
                 metadata={"type": "user"},
             )
-            self._relay.send(msg)
+            self._backend.send_message(msg, agent.id)
 
         self._setup_done = True
         logger.info("Setup complete.")
@@ -184,11 +140,10 @@ class Moderator:
 
     def _send_to_agent(self, agent: AgentConfig, prompt: str) -> str:
         msg = RelayMessage(to_agent=agent.id, content=prompt, from_agent="moderator")
-        response = self._relay.send(msg)
+        response = self._backend.send_message(msg, agent.id)
         return str(response) if response else ""
 
     def run(self):
-        """Run the main conversation loop."""
         if not self._setup_done:
             raise RuntimeError("Must call setup() before run()")
 
@@ -216,14 +171,6 @@ class Moderator:
         logger.info("Conversation complete.")
 
     def save_transcript(self, path: str = "conversation_transcript.json") -> str:
-        """
-        Save the conversation transcript to a JSON file.
-
-        Returns the path where the transcript was saved.
-        """
-        import json
-        from pathlib import Path
-
         data = {
             "topic": self.config.topic,
             "agents": [
@@ -251,7 +198,6 @@ class Moderator:
         return str(output_path.absolute())
 
     def print_transcript(self) -> None:
-        """Print the transcript to stdout."""
         print("\n" + "=" * 70)
         print("CONVERSATION TRANSCRIPT")
         print("=" * 70)
@@ -284,9 +230,8 @@ class Moderator:
         return self.turns
 
     def close(self):
-        """Clean up all connections."""
-        self._relay.close_all()
+        self._backend.close()
 
 
 if __name__ == "__main__":
-    print("Moderator module. Import and use in your code.")
+    print("Moderator example. Import and use in your code.")

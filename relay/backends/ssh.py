@@ -100,6 +100,7 @@ class SSHBackend(HostContainerBackend):
             return None
 
         correlation_id = message.correlation_id or str(uuid.uuid4())
+        message.correlation_id = correlation_id
         payload = json.dumps(
             {
                 "content": message.content,

@@ -1,76 +1,75 @@
-# SPEC: Repository Structure — 2026-04-05
+# SPEC: Repository Structure — 2026-04-07 (Updated)
 
 ## Why Restructure?
 
-The previous structure was inherited from `openclaw-agent-experimentation`, which had a different mission (policy research on delegation triggers). The copied-in files didn't reflect how agentia should work as a **federated multi-agent org system**.
+The previous structure was inherited from `openclaw-agent-experimentation`. The refactor (issue #12) cleaned up deprecated code and aligned the architecture around **AgentServer** — a HTTP-based agent-side server that handles message delivery and agent lifecycle.
 
-Key problems with the old structure:
-- `containers/runners/` mixed harness scripts and relay code together
-- No separation between "relay infrastructure" and "experiment harnesses"
-- No place for observability or org management
-- `agents/` was speculative — no data to put in it yet
-
-## New Structure
+## Current Structure
 
 ```
 agentia/
-├── containers/            ← container image definition + startup scripts
-│   ├── Dockerfile
-│   ├── config/           ← openclaw.json, auth-profiles.json (build-time)
-│   ├── startup/          ← gateway-startup.py, entrypoint.sh
-│   └── start_agents.py   ← multi-container orchestration
+├── agentia               ← CLI tool for agent container management
+├── Dockerfile            ← Container image definition
+├── constants.py          ← Shared constants
 │
-├── relay/               ← async message routing (core infrastructure)
-│   ├── relay_core.py     ← base WebSocket relay
-│   ├── exec_relay.py     ← docker exec path (reference implementation)
-│   └── moderator.py      ← debate-style multi-agent relay
+├── relay/               ← Host-side transport layer
+│   ├── __init__.py      ← Exports: DockerBackend, SSHBackend, HostContainerBackend, AgentEndpoint
+│   ├── base.py          ← RelayMessage dataclass
+│   └── backends/
+│       ├── __init__.py
+│       ├── base.py      ← HostContainerBackend abstract interface
+│       ├── docker.py    ← HTTP client to AgentServer (Docker)
+│       └── ssh.py       ← SSH+curl client to AgentServer (remote hosts)
 │
-├── harnesses/           ← control plane, built on top of relay
-│   ├── base.py           ← (future: harness abstract base class)
-│   ├── gateway_harness.py
-│   ├── interactive_harness.py
-│   ├── multi_turn_harness.py
-│   ├── single_harness.py
-│   ├── ipc_harness.py
-│   └── examples/
-│       └── debate_example.py
+├── agent_side/          ← Agent-side AgentServer
+│   ├── server.py        ← AgentServer HTTP server
+│   ├── config.py        ← ConfigManager for per-agent config
+│   ├── harness.py      ← Internal harness (manages delivery patterns)
+│   └── patterns/
+│       ├── inbox.py     ← File-based async delivery
+│       └── sync.py      ← Direct subprocess delivery
 │
-├── observability/       ← instrumentation (first-class from day 1)
-│   ├── logger.py         ← structured logging
-│   ├── trace.py          ← message traces
-│   └── metrics.py        ← agent performance metrics
+├── agents/              ← Agent runtime adapters
+│   └── adapters/
+│       ├── __init__.py  ← Exports: AgentAdapter, AgentResponse, get_adapter()
+│       ├── base.py      ← AgentAdapter ABC
+│       ├── factory.py   ← Adapter factory
+│       └── openclaw.py  ← OpenClaw implementation
 │
-├── org/                 ← org manager + evolution (Phase 2+)
+├── examples/
+│   └── moderator.py     ← Multi-agent orchestration example
 │
-├── specs/               ← design decisions with rationale
+├── containers/
+│   └── config-sanitized/  ← Isolated OpenClaw config (no API keys)
 │
-├── logs/               ← runtime logs (gitignored)
-└── src/                ← core library (utilities)
+├── specs/               ← Design decisions with rationale
+├── logs/                ← Runtime logs (gitignored)
+└── test_imports.py      ← Import validation
 ```
 
 ## Design Principles
 
-1. **Relay is pure infrastructure** — knows nothing about agent roles or harness logic. It routes messages and tracks state.
+1. **HostContainerBackend is the transport interface** — DockerBackend and SSHBackend implement this interface, providing HTTP access to AgentServer instances.
 
-2. **Harnesses are thin control plane** — they use the relay API. When we build a new harness type, it goes here without touching relay.
+2. **AgentServer owns agent lifecycle** — Each agent container runs an AgentServer that manages the agent subprocess (via AgentAdapter) and exposes HTTP endpoints for messaging.
 
-3. **Observability is first-class** — not bolted on later. Logger and trace ship from day 1, used everywhere.
+3. **Moderator is an example** — Multi-agent orchestration is demonstrated via `examples/moderator.py`, not built into the core relay layer.
 
-4. **`agents/` was removed** — speculative structure with no data to back it. If we need agent configs, that will emerge from the relay + harness layers.
+4. **No legacy harnesses** — The old `harnesses/` directory (gateway_harness, interactive_harness, multi_turn_harness, single_harness) was removed. AgentServer replaces all of these.
 
-5. **`org/` is reserved for Phase 2** — org manager, fitness, evolution. Not built yet, directory is ready.
+## Removed Components
 
-## Why Not Just Keep `containers/runners/`?
+The following were removed in the cleanup:
+- `relay/exec_relay.py` — Functionality merged into DockerBackend
+- `relay/inbox_relay.py` — Superseded by agent_side/patterns/inbox.py
+- `relay/websocket_relay.py` — Separate WebSocket hierarchy, not aligned
+- `relay/inbox.py` — Legacy file-based inbox, superseded by agent_side/patterns/inbox.py
+- `harnesses/` (entire directory) — Deprecated; AgentServer is the replacement
+- `observability/` (entire directory) — Agent-side specific; will be re-added via AgentServer in future
+- `workspaces/` (entire directory) — Template mechanism not aligned with AgentServer
+- `adapters/` (root level) — ProvisionAdapter ABC was never used
 
-The runner scripts were tightly coupled to a specific relay pattern. They hardcoded:
-- Specific agent names (critic, defender)
-- Specific turn sequences
-- Specific docker exec paths
+## Future Components
 
-A scalable harness layer needs to be data-driven, not script-driven. The new `harnesses/` directory starts fresh with a base class pattern, so new harnesses can be composed without rewriting relay code.
-
-## Staged Build
-
-- **Phase 0 (now):** Container infrastructure + relay + observability
-- **Phase 1:** Fresh harness implementations using relay API
-- **Phase 2:** Org manager + evolution layer
+- **Observability** — Will be integrated into AgentServer in a future phase
+- **WebSocketBackend** — For persistent connections to AgentServer

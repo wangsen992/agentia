@@ -218,6 +218,7 @@ Note: Inbox files are now an internal detail of AgentServer's inbox pattern impl
 5. **Streaming pattern** — deferred, when real pain point emerges
 6. ~~**AgentServer discovery**~~ — resolved: Static config (agent_id -> host:port mapping)
 7. **WebSocketBackend** — deferred, WebSocket transport not yet implemented
+8. **Observability** — deferred, will be integrated into AgentServer
 
 ---
 
@@ -237,24 +238,57 @@ Note: Inbox files are now an internal detail of AgentServer's inbox pattern impl
 - [x] `SSHBackend` → SSH tunnel → HTTP to AgentServer — `relay/backends/ssh.py`
 - [ ] `WebSocketBackend` → WebSocket client to AgentServer — deferred
 
-### Phase 4: Update BaseRelay
-- [x] Refactor ExecRelay to use DockerBackend — `relay/exec_relay.py`
-- [x] Refactor InboxRelay to use DockerBackend — `relay/inbox_relay.py`
-- [x] Moderator no longer uses isinstance checks — `relay/moderator.py`
+### Phase 4: Cleanup legacy relay code
+- [x] Remove `relay/exec_relay.py` — functionality merged into DockerBackend
+- [x] Remove `relay/inbox_relay.py` — superseded by agent_side/patterns/inbox.py
+- [x] Remove `relay/websocket_relay.py` — separate WebSocket hierarchy
+- [x] Remove `relay/inbox.py` — legacy file-based inbox
+- [x] Move `relay/moderator.py` to `examples/moderator.py` — example script
 
-### Phase 5: Deprecate gateway_harness
-- [x] gateway_harness deprecated in favor of AgentServer — `harnesses/gateway_harness.py`
+### Phase 5: Remove deprecated components
+- [x] Remove `harnesses/` directory — deprecated, AgentServer replaces all
+- [x] Remove `observability/` directory — will be re-added via AgentServer in future
+- [x] Remove `workspaces/` directory — not aligned with AgentServer architecture
+- [x] Remove root `adapters/` — ProvisionAdapter was never used
 
 ---
 
-## Relationship to Existing Code
+## Current File Structure
 
-- `relay/base.py` — BaseRelay + RelayMessage (still relevant, interface unchanged)
-- `relay/exec_relay.py` → becomes `relay/backends/docker.py`
-- `relay/inbox_relay.py` → AgentServer inbox pattern + DockerBackend
-- `relay/websocket_relay.py` → becomes `relay/backends/websocket.py`
-- `gateway_harness` → absorbed into AgentServer setup
-- `agents/adapters/openclaw.py` — AgentAdapter implementation (unchanged)
+```
+relay/
+├── __init__.py          ← DockerBackend, SSHBackend, HostContainerBackend, AgentEndpoint
+├── base.py              ← RelayMessage, BaseRelay
+└── backends/
+    ├── base.py          ← HostContainerBackend interface
+    ├── docker.py        ← HTTP client to AgentServer
+    └── ssh.py           ← SSH+curl client to AgentServer
+
+agent_side/
+├── server.py            ← AgentServer HTTP server
+├── config.py            ← ConfigManager
+├── harness.py           ← Internal harness
+└── patterns/
+    ├── inbox.py         ← File-based inbox delivery
+    └── sync.py          ← Direct subprocess delivery
+
+agents/adapters/         ← AgentAdapter implementations
+├── __init__.py
+├── base.py
+├── factory.py
+└── openclaw.py
+
+examples/
+└── moderator.py         ← Multi-agent orchestration example
+```
+
+---
+
+## References
+
+- Issue #12: AgentServer meta-issue
+- SPEC 006: Orchestration patterns
+- SPEC 008: Agent self-configuration (AgentServer enables restart endpoint)
 
 ---
 

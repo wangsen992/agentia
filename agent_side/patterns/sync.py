@@ -5,6 +5,7 @@ Messages are delivered directly to the agent subprocess.
 The harness calls OpenClawAdapter.send() immediately and returns the response.
 """
 
+import time
 import uuid
 from typing import Optional
 
@@ -58,7 +59,7 @@ class SyncDelivery:
                     "content": response.stdout.strip(),
                     "from_agent": self.agent_id,
                     "correlation_id": correlation_id,
-                    "timestamp": response.returncode,
+                    "timestamp": time.time(),
                 }
             return {
                 "content": f"[error] exit {response.returncode}: {response.stderr[:200]}",

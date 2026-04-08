@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y \
     python3 python3-venv python3-pip curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies for relay/moderator
-RUN pip3 install websocket-client websockets requests --break-system-packages
+# Install Python dependencies for relay
+RUN pip3 install requests --break-system-packages
 
 # Install OpenClaw globally
 RUN npm install -g openclaw@latest \
@@ -28,15 +28,8 @@ RUN npm install -g openclaw@latest \
 # Create directory structure
 RUN mkdir -p /workspace /workspace/inbox /workspace/inbox/responses /root/.openclaw/identity /root/.openclaw/agents/main/agent
 
-# Copy harness scripts (control plane) → /workspace/runners/
-COPY harnesses/ /workspace/runners/
-RUN chmod +x /workspace/runners/*.sh
-
 # Copy agent adapter layer
 COPY agents/ /workspace/agents/
-
-# Copy observability layer
-COPY observability/ /workspace/observability/
 
 # Copy relay layer
 COPY relay/ /workspace/relay/
@@ -47,9 +40,6 @@ COPY agent_side/ /workspace/agent_side/
 # Copy constants module
 COPY constants.py /workspace/
 
-# Copy workspace templates
-COPY workspaces/ /workspace/workspaces/
-
 # Copy sanitized OpenClaw config (no channels, no Discord, no personal API keys)
 # SECURITY: host ~/.openclaw is never mounted; container gets isolated config only.
 COPY containers/config-sanitized/openclaw.json /root/.openclaw/openclaw.json
@@ -59,11 +49,11 @@ WORKDIR /workspace
 
 # ─── Usage ────────────────────────────────────────────────────────────────────
 #
-#   docker build -t agentia .                        # build from repo root
-#   docker run -it agentia                           # interactive REPL
-#   docker run -it agentia interactive              # same as above
-#   docker run agentia single "Hello world"         # single-shot
-#   docker run agentia multi --prompt "..."         # multi-turn automated
-#   docker run -d -p 18789:18789 agentia            # gateway-only (background)
+#   docker build -t agentia .
 #
-ENTRYPOINT ["/workspace/runners/entrypoint.sh"]
+# AgentServer is started via the agentia CLI:
+#   agentia create <image> <agent-id>
+#   agentia send <agent-id> "message"
+#
+ENTRYPOINT ["python3", "/workspace/agent_side/server.py"]
+CMD ["--help"]

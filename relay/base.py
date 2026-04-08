@@ -1,8 +1,9 @@
 """
-Base Relay — abstract interface for all relay implementations.
+Base Relay — abstract interface for relay implementations.
 
-All relays must implement these methods so harnesses and moderators
-can work with any transport interchangeably.
+RelayMessage is used by DockerBackend/SSHBackend for HTTP communication
+with AgentServer. BaseRelay is kept for backward compatibility but the
+main interface for host-side transport is HostContainerBackend.
 """
 
 import json
@@ -46,12 +47,11 @@ class RelayMessage:
 
 class BaseRelay(ABC):
     """
-    Abstract base class for all relay implementations.
+    Abstract base class for relay implementations.
 
-    Implementations:
-    - ExecRelay: uses docker exec
-    - InboxRelay: async inbox-based
-    - WebSocketRelay: WebSocket relay
+    Note: The main transport interface is HostContainerBackend
+    (DockerBackend, SSHBackend). BaseRelay is kept for backward
+    compatibility with older code that expected this interface.
     """
 
     @abstractmethod
