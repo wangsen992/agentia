@@ -272,6 +272,8 @@ examples/
 | Spec | Status | Description |
 |------|--------|-------------|
 | 001 | done | Repository structure |
+| 002 | done | Agent adapter abstraction (PiAgentAdapter + factory) |
+| 003 | done | Adapter-specific container images (generic base + runtime install) |
 | 005 | done | Relay/Inbox architecture (AgentServer refactor) |
 | 006 | done | Orchestration patterns decision |
 | 007 | done | Agent provision + workspace |
@@ -285,6 +287,8 @@ examples/
 - Issue #17: [pi-agent as Primary Agent Runtime](https://github.com/wangsen992/agentia/issues/17)
 - Issue #15: [Observability](https://github.com/wangsen992/agentia/issues/15)
 - pi-agent RPC docs: https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/rpc.md
+- SPEC 002: [Agent Adapter Abstraction](./specs/002_agent_adapter.md)
+- SPEC 003: [Adapter Dockerfiles](./specs/003_adapter_dockerfiles.md)
 - SPEC 005: [Relay & Inbox Architecture](./specs/005_relay_inbox.md)
 - SPEC 009: [AgentServer API](./specs/009_agentserver_api.md)
 - Inspired by: multi-agent LLMs (Anthropic 2025), AutoGen Core, Agentic workflows

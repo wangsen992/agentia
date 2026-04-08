@@ -45,8 +45,12 @@ AgentServer
 
 ### HIGH PRIORITY
 
-#### 1. AgentServer reads adapter config from /etc/agentia/agent.json
-Currently AgentServer reads from its own config.py (host, port, delivery). The adapter fields (provider, model, workspace) are defined but not wired into server.py startup. AgentServer should read `AGENTIA_CONFIG` env var (default `/etc/agentia/agent.json`) and use adapter fields from there.
+#### 1. AgentServer reads adapter config from /etc/agentia/agent.json ✅ DONE
+AgentServer reads `AGENTIA_CONFIG` env var (default `/etc/agentia/agent.json`) and uses adapter fields (adapter_type, adapter_provider, adapter_model, adapter_workspace) at startup. Verified working:
+```
+[AgentServer] Config: default | adapter=pi-agent provider=minimax model=MiniMax-M2.7
+[Harness] Started with inbox delivery for agent-001
+```
 
 #### 2. Participation Evaluator wiring
 HybridEvaluator exists in `agent_side/participation/` but is not wired into AgentServer message handler. Route: `server.py _handle_message()` → evaluator.evaluate() → skip/observer/active decision.
