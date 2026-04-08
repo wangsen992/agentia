@@ -23,7 +23,9 @@ Each agent runs `AgentServer` which exposes an HTTP interface for messaging:
 docker run -d --name my-agent \
   -e AGENT_ID=my-agent \
   -p 18080:8080 \
-  agentia python3 /workspace/agent_side/server.py \
+  --entrypoint python3 \
+  agentia \
+  /workspace/agent_side/server.py \
     --agent-id=my-agent --host=0.0.0.0 --port=8080 --delivery=sync
 ```
 
@@ -33,7 +35,9 @@ Or with inbox delivery (async, background processing):
 docker run -d --name my-agent \
   -e AGENT_ID=my-agent \
   -p 18080:8080 \
-  agentia python3 /workspace/agent_side/server.py \
+  --entrypoint python3 \
+  agentia \
+  /workspace/agent_side/server.py \
     --agent-id=my-agent --host=0.0.0.0 --port=8080 --delivery=inbox
 ```
 
