@@ -20,7 +20,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_side.config import AgentServerConfig, ConfigManager
+from agent_side.config import AgentServerConfig, ConfigManager, DEFAULT_CONFIG_PATH
 from agent_side.harness import Harness
 
 
@@ -30,10 +30,17 @@ class AgentServer:
     and handles host messaging.
     """
 
-    def __init__(self, config_path: Optional[Path] = None):
+    def __init__(
+        self,
+        config_path: Optional[Path] = None,
+        agent_id: Optional[str] = None,
+    ):
+        config_path = config_path or Path(
+            os.environ.get("AGENTIA_CONFIG", str(DEFAULT_CONFIG_PATH))
+        )
         self.config_manager = ConfigManager(config_path)
         self.config = self.config_manager.get()
-        self.agent_id = os.environ.get("AGENT_ID", "agent-001")
+        self.agent_id = agent_id or os.environ.get("AGENT_ID", "agent-001")
         self._harness: Optional[Harness] = None
         self._start_time = time.time()
         self._server: Optional[HTTPServer] = None
@@ -268,17 +275,40 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="AgentServer")
-    parser.add_argument("--agent-id", default=os.environ.get("AGENT_ID", "agent-001"))
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--delivery", default="inbox", choices=["inbox", "sync"])
+    parser.add_argument("--agent-id", help="Agent ID (overrides config)")
+    parser.add_argument("--host", help="Host to bind (overrides config)")
+    parser.add_argument("--port", type=int, help="Port to bind (overrides config)")
+    parser.add_argument(
+        "--delivery",
+        choices=["inbox", "sync"],
+        help="Delivery pattern (overrides config)",
+    )
+    parser.add_argument("--provider", help="LLM provider (overrides config)")
+    parser.add_argument("--model", help="LLM model (overrides config)")
+    parser.add_argument("--workspace", help="Agent workspace path (overrides config)")
     args = parser.parse_args()
 
-    server = AgentServer()
-    server.agent_id = args.agent_id
-    server.config.host = args.host
-    server.config.port = args.port
-    server.config.delivery = args.delivery
+    server = AgentServer(
+        config_path=Path(os.environ.get("AGENTIA_CONFIG", str(DEFAULT_CONFIG_PATH))),
+        agent_id=args.agent_id,
+    )
+
+    if args.host is not None:
+        server.config.host = args.host
+    if args.port is not None:
+        server.config.port = args.port
+    if args.delivery is not None:
+        server.config.delivery = args.delivery
+    if args.provider is not None:
+        server.config.adapter_provider = args.provider
+    if args.model is not None:
+        server.config.adapter_model = args.model
+    if args.workspace is not None:
+        server.config.adapter_workspace = args.workspace
+
+    print(
+        f"[AgentServer] Config: {os.environ.get('AGENTIA_CONFIG', 'default')} | adapter={server.config.adapter_type} provider={server.config.adapter_provider} model={server.config.adapter_model}"
+    )
     server.run()
 
 
