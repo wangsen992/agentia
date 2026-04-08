@@ -11,7 +11,11 @@
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y \
-    curl \
+    curl gnupg \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install requests jinja2 --break-system-packages
@@ -19,7 +23,7 @@ RUN pip3 install requests jinja2 --break-system-packages
 COPY agents/ /workspace/agents/
 COPY relay/ /workspace/relay/
 COPY agent_side/ /workspace/agent_side/
-COPY setup/ /workspace/setup/
+COPY setup/ /usr/local/bin/setup/
 COPY constants.py /workspace/
 
 WORKDIR /workspace
