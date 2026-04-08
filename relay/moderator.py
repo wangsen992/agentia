@@ -215,6 +215,52 @@ class Moderator:
 
         logger.info("Conversation complete.")
 
+    def save_transcript(self, path: str = "conversation_transcript.json") -> str:
+        """
+        Save the conversation transcript to a JSON file.
+
+        Returns the path where the transcript was saved.
+        """
+        import json
+        from pathlib import Path
+
+        data = {
+            "topic": self.config.topic,
+            "agents": [
+                {"id": a.id, "name": a.name, "role": a.role} for a in self.config.agents
+            ],
+            "topology": self.config.topology,
+            "max_turns": self.config.max_turns,
+            "turns": [
+                {
+                    "turn": r.turn,
+                    "agent_id": r.agent_id,
+                    "agent_name": r.agent_name,
+                    "prompt": r.prompt,
+                    "response": r.response,
+                    "timestamp": r.timestamp,
+                }
+                for r in self.turns
+            ],
+        }
+
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(data, indent=2))
+        print(f"Transcript saved to: {output_path.absolute()}")
+        return str(output_path.absolute())
+
+    def print_transcript(self) -> None:
+        """Print the transcript to stdout."""
+        print("\n" + "=" * 70)
+        print("CONVERSATION TRANSCRIPT")
+        print("=" * 70)
+        for record in self.turns:
+            print(f"\n--- Turn {record.turn} | {record.agent_name} ---")
+            print(f"\n[Prompt]\n{record.prompt}")
+            print(f"\n[Response]\n{record.response}")
+        print("\n" + "=" * 70)
+
     def summarize(self) -> str:
         lines = [
             f"## Moderated Conversation Summary",
