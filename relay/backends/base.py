@@ -63,12 +63,15 @@ class HostContainerBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def poll_response(self, correlation_id: str, timeout: float) -> Optional[dict]:
+    def poll_response(
+        self, correlation_id: str, agent_id: str, timeout: float
+    ) -> Optional[dict]:
         """
-        Poll for an async response by correlation_id.
+        Poll for an async response by correlation_id from a specific agent.
 
         Args:
             correlation_id: The correlation ID from send_message_async.
+            agent_id: Which agent's AgentServer to poll.
             timeout: Max seconds to wait.
 
         Returns:

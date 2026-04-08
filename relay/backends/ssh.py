@@ -160,11 +160,13 @@ class SSHBackend(HostContainerBackend):
             return result["data"].get("queued", False)
         return False
 
-    def poll_response(self, correlation_id: str, timeout: float) -> Optional[dict]:
-        if not self._endpoints:
+    def poll_response(
+        self, correlation_id: str, agent_id: str, timeout: float
+    ) -> Optional[dict]:
+        endpoint = self._get_endpoint(agent_id)
+        if not endpoint:
             return None
 
-        endpoint = next(iter(self._endpoints.values()))
         start = time.time()
 
         while time.time() - start < timeout:

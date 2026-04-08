@@ -137,15 +137,17 @@ class DockerBackend(HostContainerBackend):
             logger.error(f"Error async send to {agent_id}: {e}")
             return False
 
-    def poll_response(self, correlation_id: str, timeout: float) -> Optional[dict]:
+    def poll_response(
+        self, correlation_id: str, agent_id: str, timeout: float
+    ) -> Optional[dict]:
         """
-        Poll GET /response/{correlation_id} until timeout.
+        Poll GET /response/{correlation_id} from specific agent until timeout.
         """
-        if not self._endpoints:
-            logger.error("No endpoints configured for poll_response")
+        endpoint = self._get_endpoint(agent_id)
+        if not endpoint:
+            logger.error(f"Unknown agent_id: {agent_id}")
             return None
 
-        endpoint = next(iter(self._endpoints.values()))
         start = time.time()
         last_error = None
 
