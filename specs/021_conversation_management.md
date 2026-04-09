@@ -173,28 +173,42 @@ When you type `send my-research-agent "hello"` without `--conv`, the CLI should 
 
 ### Routing Logic
 
+**Rule: Host-side primary lookup with agent-side verification fallback.**
+
 ```
 send <agent> <message>
-  ├─ If --conv <name> is given → use that, update last_active
-  └─ Else:
+  ├─ If --conv <name> is given:
+  │    → Route directly to that conversation
+  │    → Update last_active in Layer A and .active/<agent>.jsonl
+  │
+  └─ Else (no --conv):
+       STEP 1 — Host-side lookup (primary):
        ├─ Read ~/.agentia/conversations/.active/<agent>.jsonl
-       │    (contains: session_name, conv_id, last_active)
+       │    (contains: conv_id, session_name, last_active)
        │
-       ├─ If .active/<agent>.jsonl exists AND session is still "active":
-       │    → POST /sessions/<session_name>/message
-       │    → update last_active in both Layer A and Layer B
+       STEP 2 — Route with agent-side verification (fallback):
+       ├─ Try: POST /sessions/<session_name>/message
+       │    (may fail if session stopped due to idle timeout)
        │
-       ├─ If .active/<agent>.jsonl exists but session is "idle"
-       │  (agent was stopped / idle timeout fired):
-       │    → Create NEW session via POST /sessions/new {title: conv_id}
-       │    → Layer B returns new session_name
-       │    → Update Layer A conv with new session_name + status=active
+       ├─ If agent returns "session not running" (409):
+       │    → Agent-side: GET /sessions → find most recently active session
+       │    → If found: POST /sessions/new {title: conv_id} to resume with same conv name
+       │    → If not found: create fresh "default" conversation
        │
        └─ If .active/<agent>.jsonl does NOT exist:
-            → Pick most recently active conversation for this agent from Layer A
-            → Route to that session (resume or create new)
-            → If no conversations exist → create new "default" conversation
+            → Agent-side: GET /sessions → most recently active session
+            → If found: route to it
+            → If not found: create new "default" conversation
 ```
+
+**Why this approach?**
+- Layer A (host-side) is the fast path — no extra API round-trips
+- Agent-side verification handles stale state: idle timeout fired, agent restarted, etc.
+- If agent is entirely offline: Layer A is the only option; create new session as fallback
+- `GET /sessions` on the agent is authoritative for "what sessions actually exist right now"
+
+### Active Conversation Tracking
+
 
 ### Active Conversation Tracking
 
@@ -228,9 +242,14 @@ After every `send` completes:
 
 ### Status propagation
 
-Layer B (AgentServer) doesn't push updates to Layer A. Layer A is updated on the **client side** — when the CLI receives the response from Layer B, it updates the local registry.
+Layer B doesn't push updates to Layer A — Layer A is updated on the client side after every send. However, Layer A is **eventually consistent** with Layer B:
+- After routing, Layer A reflects what the agent confirmed was running
+- If idle timeout fires on Layer B, Layer A won't know until the next send attempt fails → then it falls back to `GET /sessions`
+- The `.active/<agent>.jsonl` file is the hot path cache; Layer A conversation files are the durable record
 
-If multiple CLI clients talk to the same agent (different machines), the Layer A files can diverge. That's acceptable — Layer A is local to each host. Sync is out of scope for this spec.
+If multiple CLI clients talk to the same agent (different machines), Layer A files can diverge. That's acceptable — Layer A is local to each host. The agent's `GET /sessions` is always the authoritative session state.
+
+Sync across machines is out of scope for this spec.
 
 ---
 
