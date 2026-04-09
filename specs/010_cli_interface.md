@@ -1,77 +1,83 @@
 # Agentia CLI — Interface Specification
 
-**Status:** Draft  
+**Status:** Updated
 **Date:** 2026-04-08
+**Last updated:** 2026-04-09
 
 ---
 
 ## Design Principle
 
-**Agent side** and **host side** are fully separate CLIs that know nothing about each other.
+**Agent side** and **host side** are fully separate CLIs that communicate only through HTTP.
 
 The only connection: both communicate with AgentServer's HTTP API.
+
+Each machine in the mesh runs both CLIs — every node is symmetric.
 
 ---
 
 ## Agent Side CLI
 
-Runs on the machine where the agent is deployed. Manages the local agent environment. CLI name: **`agentia-agent`**.
+Runs on the machine where the agent is deployed. Starts and manages the local AgentServer. CLI name: **`python cli/agent.py`** (the `agentia-agent` wrapper script is deprecated).
 
-### `agentia-agent setup <adapter> [options]`
+### `python cli/agent.py setup <adapter> [options]`
 Render bootstrap files + install runtime. Must be run before first `serve`.
 
 ```
-agentia-agent setup pi-agent \
-    --config /etc/agentia/agent.json \
+python cli/agent.py setup pi-agent \
+    --config /root/.pi/agent/agent.json \
     --provider minimax \
     --model MiniMax-M2.7 \
-    --workspace /workspace \
-    --role-goal "You are a helpful research assistant" \
+    --workspace /root/.pi/agent \
+    --role-goal "You are a helpful research assistant." \
     --backstory "You specialize in fluid dynamics and CFD."
 ```
 
-- `--adapter` — `pi-agent` or `openclaw` (required)
-- `--config` — output path for agent.json (default: `/etc/agentia/agent.json`)
+- `--adapter` — `pi-agent` (required)
+- `--config` — output path for agent.json (required)
 - `--provider`, `--model`, `--workspace` — standard config fields
 - `--role-goal`, `--backstory`, `--skills` — bootstrap content
-- `--var KEY=VALUE` — additional template variables
 
-**Does NOT start AgentServer.** Run `agentia-agent serve` separately after setup.
+**Does NOT start AgentServer.** Run `serve` separately after setup.
 
-### `agentia-agent serve [options]`
-Start AgentServer HTTP API. Can optionally run `setup` first with `--install <adapter>` — the single-shot pattern that avoids a `docker commit` workaround.
+### `python cli/agent.py serve [options]`
+Start AgentServer HTTP API. Can optionally run setup first with `--install <adapter>`.
 
 ```
 # Two-step: setup first, then serve
-agentia-agent setup pi-agent --config /etc/agentia/agent.json ...
-agentia-agent serve --config /etc/agentia/agent.json
+python cli/agent.py setup pi-agent --config /root/.pi/agent/agent.json ...
+python cli/agent.py serve --config /root/.pi/agent/agent.json
 
-# Or one-shot: setup + serve in the same container start
-agentia-agent serve \
+# One-shot: setup + serve
+python cli/agent.py serve \
     --install pi-agent \
-    --config /etc/agentia/agent.json \
+    --config /root/.pi/agent/agent.json \
     --provider minimax \
     --model MiniMax-M2.7 \
-    --workspace /workspace \
-    --role-goal "You are a helpful research assistant"
+    --workspace /root/.pi/agent \
+    --role-goal "You are a helpful research assistant."
 ```
 
 ---
 
 ## Host Side CLI
 
-Runs on the host machine. Discovers agents via HTTP, registers them locally, and manages them through the AgentServer API. Does not manage Docker or deployment — those are handled by external tools.
+Runs on any machine (host or agent). Sends messages to registered agents via their AgentServer HTTP API, and manages the local registry.
 
-### `agentia register <url> [options]`
+CLI name: **`python cli/host.py`**
+
+**Critical clarification:** `host.py` is not just a host-side tool. It is available to the running agent as a first-class outbound communication tool. When an agent needs to reach another agent, it calls `host.py send <peer> <message>` just like the human does from the command line.
+
+### `python cli/host.py register <url> [options]`
 Register an agent by its AgentServer HTTP endpoint. Saves to local registry.
 
 ```
-agentia register http://localhost:18080 \
+python cli/host.py register http://localhost:18080 \
     --name my-research-agent \
     --metadata '{"role": "research", "domain": "fluid-dynamics"}'
 ```
 
-- `<url>` — AgentServer base URL (required)
+- `<url>` — AgentServer base URL (required). Can be any reachable URL — localhost, cloud VM, remote server.
 - `--name` — friendly name for this agent (required)
 - `--metadata` — arbitrary JSON blob stored locally with the agent
 
@@ -83,157 +89,132 @@ The registry is `~/.agentia/agents.json`:
       "url": "http://localhost:18080",
       "name": "my-research-agent",
       "registered_at": "2026-04-08T...",
-      "metadata": {...}
-    }
-  }
-}
-```
-
-### `agentia agents`
-List all registered agents.
-
-```
-$ agentia agents
-my-research-agent  http://localhost:18080  [research]
-claude-coder      http://localhost:18081  [coding]
-```
-
-### `agentia send <name> <message>`
-Send a message to a registered agent. Blocks until response.
-
-```
-agentia send my-research-agent "What can you do?"
-```
-
-- `<name>` — agent name from registry (required)
-- `<message>` — message string (remaining args joined)
-
-### `agentia status <name>`
-Get agent status via `GET /status`.
-
-```
-$ agentia status my-research-agent
-name:      my-research-agent
-url:       http://localhost:18080
-uptime:    3h 14m
-delivery:  inbox
-adapter:   pi-agent
-provider:  minimax
-model:     MiniMax-M2.7
-```
-
-### `agentia configure <name> <key> <value>`
-Update agent configuration via `PATCH /config`. Supports live config updates.
-
-```
-# Change delivery mode
-agentia configure my-research-agent delivery inbox
-
-# Update role goal
-agentia configure my-research-agent role.goal "You specialize in turbulence modeling."
-
-# Update persona via dot notation
-agentia configure <name> role.backstory "Former NASA CFD researcher."
-```
-
-Config changes are sent to AgentServer's `PATCH /config` endpoint. AgentServer applies them to the running harness.
-
-### `agentia update <name> [options]`
-Push updated bootstrap files to a running agent. Re-renders AGENTS.md + SYSTEM.md and signals the agent to reload.
-
-```
-agentia update my-research-agent \
-    --role-goal "You specialize in turbulence modeling." \
-    --backstory "Expert in boundary layer instability."
-```
-
-- Sends new config via `PATCH /config` with updated role fields
-- AgentServer re-renders bootstrap files and signals the running agent
-- The agent subprocess receives the updated context on next message
-
-### `agentia deregister <name>`
-Remove an agent from the local registry. Does NOT stop the remote agent.
-
-```
-agentia deregister my-research-agent
-```
-
-### `agentia forward <name> <subcommand>`
-Forward any command directly to the agent's AgentServer HTTP API. For debugging and advanced usage.
-
-```
-agentia forward my-research-agent GET /status
-agentia forward my-research-agent POST /message/async --data '{"content": "hello"}'
-```
-
----
-
-## Registry
-
-`~/.agentia/agents.json` — single source of truth for host-side agent registry.
-
-```json
-{
-  "version": 1,
-  "agents": {
-    "<name>": {
-      "url": "https://agent.example.com:8080",
-      "name": "<display name>",
-      "registered_at": "<ISO timestamp>",
-      "last_seen_at": "<ISO timestamp>",
       "metadata": {}
     }
   }
 }
 ```
 
+### `python cli/host.py agents`
+List all registered agents.
+
+```
+$ python cli/host.py agents
+my-research-agent  http://localhost:18080  [research]
+claude-coder      http://vm.example.com:8080  [coding]
+```
+
+### `python cli/host.py send <name> <message> [--new]`
+Send a message to a registered agent. Blocks until response.
+
+```
+python cli/host.py send my-research-agent "What can you do?"
+```
+
+- `<name>` — agent name from registry (required)
+- `<message>` — message string (remaining args joined)
+- `--new` — create a new conversation/session for this message
+
+### `python cli/host.py sessions <name>`
+List all sessions for an agent.
+
+### `python cli/host.py conv <subcommand>`
+Manage conversations. Subcommands: `list`, `show`, `rename`, `tag`, `delete`, `use`.
+
+### `python cli/host.py status <name>`
+Get agent status via `GET /status`.
+
+### `python cli/host.py configure <name> <key> <value>`
+Update agent configuration via `PATCH /config`.
+
+### `python cli/host.py deregister <name>`
+Remove an agent from the local registry. Does NOT stop the remote agent.
+
+---
+
+## File Layout
+
+```
+~/.agentia/
+├── agents.json          # registry: name → URL mapping for known agents
+├── conversations/       # conversation state (Layer A)
+│   └── .active/        # active conversation per agent
+└── peers.json          # peer agents known from this machine (name → URL)
+
+# On remote machines, peers.json is seeded from the host's agents.json
+# so the agent knows which peers it can reach
+```
+
+---
+
+## Discovery: How Does an Agent Find Peers?
+
+Each machine maintains `peers.json` listing known peer agents by name and URL:
+
+```json
+{
+  "peers": {
+    "research-agent": "http://vm-research.example.com:8080",
+    "coding-agent": "http://192.168.1.50:8080"
+  }
+}
+```
+
+The agent is told (via system prompt or config) which peer to contact for which task. No auto-discovery — peers are registered explicitly.
+
+**V1:** Static config. Future: DNS-SD/mDNS or a central registry.
+
 ---
 
 ## HTTP API (AgentServer side)
 
-For reference — what the host-side CLI talks to.
+For reference — what `host.py` talks to. See SPEC 009 for full API documentation.
 
-| GET | `/status` | Agent health, delivery mode, adapter type, provider, model |
-| PATCH | `/config` | Update config (delivery mode, role fields, etc.) |
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/status` | Agent health, delivery mode, adapter type |
+| PATCH | `/config` | Update config |
 | POST | `/restart` | Restart agent subprocess |
-| POST | `/message` | Send message, wait for response |
-| POST | `/message/async` | Queue message, return correlation ID |
-| GET | `/response/{id}` | Poll for async response |
-| GET | `/config` | Get current config |
-| PUT | `/config` | Replace entire config |
+| POST | `/sessions/new` | Create new session |
+| POST | `/sessions/<name>/message` | Send message, wait for response |
+| GET | `/sessions` | List all sessions |
+| DELETE | `/sessions/<name>` | Stop/delete session |
+| POST | `/sessions/<name>/compact` | Trigger compaction |
 
 ---
 
 ## Design Decisions
 
 ### Why separate CLIs?
-- Agent side may run in Docker, SSH, bare metal, any environment
-- Host side should work the same way regardless of where the agent is deployed
-- Docker/container management is already handled by `docker` CLI — no need to duplicate
+- Agent side runs on the machine where the agent lives
+- Host side can run anywhere — host machine or agent machine
+- `host.py` is a first-class tool available to agents for inter-agent communication
 
 ### Why register first?
-The registry is a local convenience — it maps friendly names to URLs. Operations like `send`, `status`, `configure` all work by name lookup. If you know the URL directly, you can use `forward` without registering.
+The registry maps friendly names to URLs. Operations like `send`, `status`, `configure` all work by name lookup. If you know the URL directly, you can use `forward` without registering.
 
-### Why `configure` and `update` separately?
-- `configure` — live config changes via PATCH /config (delivery mode, polling interval, etc.)
-- `update` — re-render bootstrap files and signal agent context reload (role, backstory, skills)
+### Why symmetric nodes?
+Every machine runs both `agent.py` (server) and `host.py` (client):
+- Server (`agent.py`) — receives messages, manages sessions
+- Client (`host.py`) — sends messages to any peer, available as a tool to the agent
 
-Both flow through the same `PATCH /config` endpoint but carry different semantic intent.
+This enables the peer-to-peer mesh: any agent can reach any other agent by URL, with no central hub.
+
+### Why `peers.json` separate from `agents.json`?
+- `agents.json` — agents registered from this machine's perspective (host-side view)
+- `peers.json` — agents this machine's agent can reach (agent-side view, may be a subset)
+
+The agent doesn't need to know about every agent the human has registered. It only needs to know peers it can use for specific tasks.
 
 ### Why not manage containers from host CLI?
 - Docker is already manageable via `docker` CLI
-- SSH/bare-metal environments require manual setup anyway — the CLI can't automate that
-- Keeping container lifecycle separate means the host CLI stays thin and focused on agent operations
+- SSH/bare-metal environments require manual setup anyway
+- Keeping container lifecycle separate means the CLI stays thin and focused on agent operations
 
 ---
 
 ## Open Questions
 
-1. **Auto-discovery** — option for future. Manual `register` first. Design for pluggable discovery (e.g., `--discovery mdns` flag).
-
-2. **Auth** — defer. No auth between host and agent for now.
-
-3. **`update` signal** — confirmed: `Harness.restart_agent()` called after re-rendering bootstrap files.
-
-
-4. **Registry path** — `~/.agentia/agents.json` — confirmed.
+1. **Registry sync** — should `peers.json` on remote machines auto-sync from the host's `agents.json`?
+2. **Capability enforcement** — should `host.py` validate target URLs against a whitelist, or trust the system prompt?
+3. **Async communication** — for long-running tasks, should agents use `/message/async` + polling instead of blocking sends?

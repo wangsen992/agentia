@@ -1,11 +1,12 @@
 # SPEC 005: Relay & Inbox Architecture — 2026-04-07
+**Updated:** 2026-04-09
 
 ## Goal
 
-Define how agents communicate asynchronously in a multi-agent system, with clear separation between:
-- **Routing** (multi-agent coordination)
-- **Transport** (how messages cross deployment boundaries)
-- **Delivery patterns** (how messages are handled on the agent side)
+Define how agents communicate asynchronously in a multi-agent mesh, with clear separation between:
+- **Routing** (which agent to contact)
+- **Transport** (how messages cross machine boundaries — HTTP API)
+- **Delivery patterns** (how messages are handled on the receiving agent side)
 
 ## Why This Matters
 
@@ -15,241 +16,108 @@ The original `Relay` + `Moderator` pattern was **synchronous and moderator-drive
 - No concept of "I have mail"
 
 Real multi-agent systems need **async message passing**:
-- Agent A spawns Agent B → doesn't wait → continues working
-- Agent B finishes → sends result to Agent A's inbox
+- Agent A sends to Agent B → doesn't wait → continues working
+- Agent B finishes → sends result back to Agent A
 - Agent A picks it up when ready
 
 ---
 
-## Architecture
+## Architecture: Peer-to-Peer Mesh
+
+There is no central hub. Each machine runs a **symmetric node** — both a server (receives messages) and a client (sends messages to other agents).
 
 ```
-Host side:
-┌─────────────────────────────────────────────────────────────┐
-│ BaseRelay                                                     │
-│ - Multi-agent routing, broadcast, connection management       │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ↓
-┌─────────────────────────────────────────────────────────────┐
-│ HostContainerBackend                                          │
-│ - Adapts to employment environment                            │
-│ - HTTP client / SSH tunnel / cloud API / docker exec         │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ↓ (deployment-specific network)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Agent side (inside container / remote host):
-                      ↑
-                      │
-┌─────────────────────────────────────────────────────────────┐
-│ AgentServer                                                   │
-│ - Universal HTTP/WebSocket interface                         │
-│ - Configurable delivery pattern (inbox, sync, streaming)      │
-│ - Owns AgentAdapter lifecycle                                 │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ↓
-┌─────────────────────────────────────────────────────────────┐
-│ AgentAdapter                                                  │
-│ - Per-message contract: send(str) → AgentResponse            │
-│ - Lifecycle: setup/start/send/stop/teardown                   │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-                      ↓
-              Agent process
+Machine A (your Mac)
+  ├── AgentServer (agent.py)     ← receives messages
+  └── host.py                    ← sends messages to any peer
+
+Machine B (cloud VM)
+  ├── AgentServer (agent.py)     ← receives messages
+  └── host.py                    ← sends messages to any peer
 ```
 
-### Layers
+Communication is always machine-to-machine HTTP. No relay, no backend adapter.
 
-| Layer | Responsibility | Examples |
+```
+Agent A (Machine A)                     Agent B (Machine B)
+       │                                      ↑
+       │  HTTP POST /sessions/.../message      │
+       │ ──────────────────────────────────► │
+       │                                      │ processes, generates response
+       │  response (Scenario 1: A polls)     │
+       │ ◄────────────────────────────────── │
+       │  OR                                 │
+       │  response (Scenario 2: B calls A)  │
+       │ ──────────────────────────────────► │
+```
+
+**Every machine in the mesh runs both:**
+- `agent.py` — AgentServer HTTP API (receiving end)
+- `host.py` — HTTP client (sending end, available to the agent as a tool)
+
+---
+
+## Transport: Pure HTTP API
+
+Messages cross machine boundaries via HTTP POST to the target machine's AgentServer. No SSH tunnels, no docker exec, no cloud-specific backends. Any machine with an HTTP server and network reachability can participate in the mesh.
+
+This replaces the HostContainerBackend concept from the original spec — that layer is no longer relevant since all communication is HTTP-to-HTTP.
+
+---
+
+## Two Response Scenarios
+
+### Scenario 1: Initiator polls for response
+
+Agent A sends message to Agent B, then polls B's API for the response.
+
+- A sends via HTTP POST to B's AgentServer
+- B stores conversation on B's machine, processes, stores response
+- A polls: `GET /responses?from_agent=B`
+- B returns stored response
+- A receives it as a conversation
+
+**Tradeoff:** Simple, no machine needs a publicly reachable HTTP server. But requires A to poll periodically.
+
+### Scenario 2: Responder proactively delivers response
+
+Agent B sends the response back to Agent A by calling A's HTTP API.
+
+- A sends via HTTP POST to B's AgentServer
+- B processes, generates response
+- B uses its own `host.py` to call A's AgentServer: `POST /message` with the response
+- A receives it as a conversation on A's machine
+
+**Tradeoff:** Immediate delivery, but requires A's machine to have a reachable HTTP endpoint.
+
+**For V1, Scenario 1 (polling) is recommended** because it works without any machine needing a publicly reachable HTTP server.
+
+---
+
+## Layer Responsibilities
+
+| Layer | Responsibility | Location |
 |-------|----------------|----------|
-| **BaseRelay** | Multi-agent routing, broadcast, connection management | Moderator talks to this |
-| **HostContainerBackend** | Adapts to deployment environment | Docker exec, SSH tunnel, HTTP, cloud API |
-| **AgentServer** | Delivery patterns, universal interface, owns AgentAdapter | Listens on HTTP/WebSocket |
-| **AgentAdapter** | Per-message send/receive contract | OpenClawAdapter |
-
----
-
-## Core Concepts
-
-### RelayMessage
-
-Unified message type across all relay implementations:
-
-```python
-@dataclass
-class RelayMessage:
-    content: str                      # message text
-    from_agent: Optional[str] = None  # sender ID
-    to_agent: Optional[str] = None    # single recipient
-    to_agents: Optional[list[str]] = None  # broadcast recipients
-    correlation_id: Optional[str] = None  # request/response matching
-    metadata: Optional[dict] = None   # additional data
-    id: Optional[str] = None          # UUID, auto-generated
-    timestamp: Optional[float] = None # auto-generated
-```
-
-### Message Patterns
-
-| Pattern | Description | Use case |
-|---------|-------------|----------|
-| **Fire-and-forget** | `send_async()` without waiting | Notifications, spawning subagents |
-| **Request/response** | `send()` with correlation_id | Task delegation with result |
-| **Broadcast** | `broadcast()` to multiple agents | Topic announcement |
-
-### Delivery Patterns (AgentServer-side)
-
-AgentServer supports configurable delivery behavior:
-
-**Inbox Pattern** (current):
-```
-- Messages queued in inbox
-- Agent polls inbox on schedule
-- Response written to correlation file
-- Good for: background agents, monitoring agents
-```
-
-**Sync Pattern** (future):
-```
-- Message delivered directly to agent
-- Response returned immediately
-- Good for: interactive agents
-```
-
-**Streaming Pattern** (future):
-```
-- Message delivered via WebSocket stream
-- Partial responses streamed back
-- Good for: long-running tasks with progress
-```
-
----
-
-## AgentServer Interface
-
-AgentServer exposes HTTP/WebSocket endpoints:
-
-```python
-class AgentServer:
-    # Lifecycle
-    def setup(self) -> None       # provision gateway, identity
-    def start(self) -> None       # start listening
-    def stop(self) -> None        # stop listening
-    def teardown(self) -> None     # cleanup
-
-    # Message handling
-    def send(self, message: RelayMessage) -> str
-        # POST /message → blocks until response
-
-    def send_async(self, message: RelayMessage) -> bool
-        # POST /message/async → queues and returns immediately
-
-    def poll_inbox(self, agent_id: str, max: int = 10) -> list[RelayMessage]
-        # GET /inbox → returns queued messages
-
-    def write_response(self, correlation_id: str, content: str) -> bool
-        # POST /response → writes response for correlation
-
-    # Configuration
-    def set_delivery_pattern(self, pattern: str) -> None
-        # "inbox" | "sync" | "stream"
-```
-
----
-
-## HostContainerBackend Implementations
-
-| Backend | Transport | Use Case |
-|---------|-----------|----------|
-| **DockerBackend** | docker exec → HTTP to AgentServer | Local Docker containers |
-| **SSHBackend** | SSH tunnel → HTTP to AgentServer | Remote host access |
-| **CloudBackend** | Cloud API → HTTP to AgentServer | Cloud-hosted agents |
-| **WebSocketBackend** | WebSocket to AgentServer | Persistent connections |
+| **host.py** | Sends messages to any peer agent by URL | Any machine (host or agent) |
+| **AgentServer** | Receives messages, manages sessions, delivers responses | Any machine |
+| **SessionManager** | Manages pi subprocess lifecycle, session files | Inside AgentServer |
+| **AgentAdapter** | Per-message contract: send(str) → response | Inside AgentServer |
 
 ---
 
 ## File Layout
 
 ```
-relay/
-├── __init__.py
-├── base.py              ← BaseRelay abstract class + RelayMessage
-├── moderator.py          ← Conversation orchestration
-├── backends/
-│   ├── __init__.py
-│   ├── base.py          ← HostContainerBackend interface
-│   ├── docker.py        ← Docker exec → HTTP to AgentServer
-│   ├── ssh.py           ← SSH tunnel → HTTP to AgentServer
-│   └── websocket.py     ← WebSocket to AgentServer
+~/.agentia/
+├── agents.json          # host-side registry: name → URL mapping
+├── conversations/       # host-side conversation state
+└── peers.json          # peer agents known from this machine (name → URL)
 
-agent_side/
-├── server.py            ← AgentServer implementation
-├── adapters/
-│   ├── base.py          ← AgentAdapter interface
-│   └── openclaw.py      ← OpenClawAdapter
-└── patterns/
-    ├── inbox.py         ← Inbox delivery pattern
-    ├── sync.py          ← Sync delivery pattern
-    └── stream.py        ← Streaming delivery pattern
+# On each remote machine:
+~/.agentia/
+├── agents.json          # local registry (may differ from host's)
+└── peers.json          # mirrors known peers for this machine
 ```
-
----
-
-## Inbox File Format (legacy, now internal to AgentServer)
-
-```
-AgentServer inbox directory (internal):
-/workspace/inbox/
-├── <agent_id>.jsonl     ← One JSON Lines file per agent
-│   {"id":"...","from":"A","content":"...","timestamp":...}
-```
-
-Note: Inbox files are now an internal detail of AgentServer's inbox pattern implementation, not exposed to BaseRelay.
-
----
-
-## Open Questions
-
-1. ~~**Polling interval**~~ — resolved: AgentServer exposes `poll_inbox`, polling strategy is AgentServer configuration
-2. ~~**Message ordering**~~ — resolved: FIFO is fine
-3. ~~**TTL expiration**~~ — resolved: AgentServer handles expiration internally
-4. ~~**Persistence**~~ — resolved: Inbox files survive container restart if on shared volume
-5. **Streaming pattern** — deferred, when real pain point emerges
-6. ~~**AgentServer discovery**~~ — resolved: Static config (agent_id -> host:port mapping)
-7. **WebSocketBackend** — deferred, WebSocket transport not yet implemented
-8. **Observability** — deferred, will be integrated into AgentServer
-
----
-
-## Implementation Phases
-
-### Phase 1: Define interfaces
-- [x] `HostContainerBackend` abstract interface — `relay/backends/base.py`
-- [x] `AgentServer` interface definition — `agent_side/server.py`
-
-### Phase 2: Implement AgentServer
-- [x] HTTP server with inbox pattern — `agent_side/server.py`
-- [x] `poll_inbox` and `write_response` endpoints — `agent_side/patterns/inbox.py`
-- [x] AgentAdapter lifecycle management — `agent_side/harness.py`
-
-### Phase 3: Implement HostContainerBackend
-- [x] `DockerBackend` → HTTP client to AgentServer — `relay/backends/docker.py`
-- [x] `SSHBackend` → SSH tunnel → HTTP to AgentServer — `relay/backends/ssh.py`
-- [ ] `WebSocketBackend` → WebSocket client to AgentServer — deferred
-
-### Phase 4: Cleanup legacy relay code
-- [x] Remove `relay/exec_relay.py` — functionality merged into DockerBackend
-- [x] Remove `relay/inbox_relay.py` — superseded by agent_side/patterns/inbox.py
-- [x] Remove `relay/websocket_relay.py` — separate WebSocket hierarchy
-- [x] Remove `relay/inbox.py` — legacy file-based inbox
-- [x] Move `relay/moderator.py` to `examples/moderator.py` — example script
-
-### Phase 5: Remove deprecated components
-- [x] Remove `harnesses/` directory — deprecated, AgentServer replaces all
-- [x] Remove `observability/` directory — will be re-added via AgentServer in future
-- [x] Remove `workspaces/` directory — not aligned with AgentServer architecture
-- [x] Remove root `adapters/` — ProvisionAdapter was never used
 
 ---
 
@@ -257,12 +125,12 @@ Note: Inbox files are now an internal detail of AgentServer's inbox pattern impl
 
 ```
 relay/
-├── __init__.py          ← DockerBackend, SSHBackend, HostContainerBackend, AgentEndpoint
-├── base.py              ← RelayMessage, BaseRelay
+├── __init__.py          ← (deprecated, HostContainerBackend removed 2026-04-09)
+├── base.py              ← (deprecated, no longer needed)
 └── backends/
-    ├── base.py          ← HostContainerBackend interface
-    ├── docker.py        ← HTTP client to AgentServer
-    └── ssh.py           ← SSH+curl client to AgentServer
+    ├── base.py          ← (deprecated)
+    ├── docker.py        ← (deprecated)
+    └── ssh.py           ← (deprecated)
 
 agent_side/
 ├── server.py            ← AgentServer HTTP server
@@ -276,24 +144,20 @@ agents/adapters/         ← AgentAdapter implementations
 ├── __init__.py
 ├── base.py
 ├── factory.py
-└── openclaw.py
+└── pi_agent.py         ← pi-agent adapter
 
-examples/
-└── moderator.py         ← Multi-agent orchestration example
+cli/
+├── agent.py             ← agent-side CLI (runs AgentServer)
+└── host.py              ← host-side CLI + available to agents as tool
 ```
 
----
-
-## References
-
-- Issue #12: AgentServer meta-issue
-- SPEC 006: Orchestration patterns
-- SPEC 008: Agent self-configuration (AgentServer enables restart endpoint)
+> **Note:** The `relay/` directory and its backends are deprecated as of 2026-04-09. All transport is now pure HTTP API. The directory remains for reference until cleaned up.
 
 ---
 
-## References
+## Open Questions
 
-- Issue #12: AgentServer meta-issue
-- SPEC 006: Orchestration patterns (moderator still uses BaseRelay)
-- SPEC 008: Agent self-configuration (AgentServer enables restart endpoint)
+1. ~~**HostContainerBackend**~~ — resolved: removed, HTTP-to-HTTP is the only transport
+2. **Discovery** — how do agents learn peer URLs? V1: static `peers.json` config
+3. **Scenario 1 vs 2** — V1 uses Scenario 1 (polling). Scenario 2 (proactive delivery) deferred until a machine needs a publicly reachable HTTP endpoint
+4. **Moderator role** — can an agent act as moderator for sub-agents? Uses same mesh communication; no spec changes needed
