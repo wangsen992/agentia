@@ -98,6 +98,7 @@ class AgentServerHandler(BaseHTTPRequestHandler):
         path = self.path
 
         if path == "/config":
+            open('/tmp/debug_config_hit.txt', 'w').write("config route hit")
             self._send_json(200, self._harness.config.to_dict())
             return
 
@@ -145,7 +146,7 @@ class AgentServerHandler(BaseHTTPRequestHandler):
 
         # Files API: GET /files/<path>, LIST /files/<path>
         if path.startswith("/files/"):
-            self._handle_files(path.removeprefix("/files/"), "")
+            self._handle_files(path.removeprefix("/files/"), "GET")
             return
 
         self._send_json(404, {"error": "not found"})
@@ -303,7 +304,6 @@ class AgentServerHandler(BaseHTTPRequestHandler):
         """
         workspace = Path(os.path.expanduser(self._harness.config.adapter_workspace))
         target = (workspace / file_path).resolve()
-
 
         # Reject path traversal — ensure resolved path is under workspace
         try:

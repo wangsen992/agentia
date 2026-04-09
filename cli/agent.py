@@ -116,7 +116,7 @@ def cmd_serve(
     print(f"[agentia-agent] Starting AgentServer with config: {config_path}")
     os.execvp(
         "python3",
-        ["python3", "/workspace/agent_side/server.py"],
+        ["python3", "/agent/agent_side/server.py"],
     )
 
 
