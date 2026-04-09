@@ -366,7 +366,7 @@ def cmd_send(name: str, message: str, conv: str | None = None, new_conv: bool = 
 
     if not response:
         return 1
-    content = response.get("content", response.get("stdout", ""))
+    content = response.get("response") or response.get("content") or response.get("stdout", "")
     if isinstance(content, dict):
         # Session API returns structured response
         print(response.get("response", content))
