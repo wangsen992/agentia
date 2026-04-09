@@ -371,6 +371,38 @@ def cmd_deregister(name: str) -> int:
     return 0
 
 
+def cmd_prune() -> int:
+    """Remove unreachable agents from the registry."""
+    registry = _load_registry()
+    agents = registry.get("agents", {})
+    if not agents:
+        print("No agents registered.")
+        return 0
+
+    pruned = []
+    for name in list(agents.keys()):
+        url = agents[name]["url"]
+        try:
+            req = Request(f"{url}/status")
+            with urlopen(req, timeout=5) as resp:
+                if resp.status >= 200 and resp.status < 300:
+                    print(f"[prune] {name}: OK ({url})")
+                    continue
+        except Exception as e:
+            pass
+
+        print(f"[prune] {name}: unreachable — removing ({url})")
+        del registry["agents"][name]
+        pruned.append(name)
+
+    if pruned:
+        _save_registry(registry)
+        print(f"[agentia] Pruned {len(pruned)} agent(s): {', '.join(pruned)}")
+    else:
+        print("[agentia] All agents reachable, nothing to prune.")
+    return 0
+
+
 def cmd_forward(name: str, method: str, path: str, data: str | None) -> int:
     """Forward a raw HTTP request to the agent."""
     url = _agent_url(name, path)
@@ -470,6 +502,9 @@ def main() -> int:
     p_dereg = sub.add_parser("deregister", help="Remove agent from registry")
     p_dereg.add_argument("name", help="Agent name")
 
+    # prune
+    sub.add_parser("prune", help="Remove unreachable agents from registry")
+
     # forward <name> <method> <path>
     p_fwd = sub.add_parser("forward", help="Forward raw HTTP to agent")
     p_fwd.add_argument("name", help="Agent name")
@@ -524,6 +559,9 @@ def main() -> int:
 
     if args.command == "deregister":
         return cmd_deregister(args.name)
+
+    if args.command == "prune":
+        return cmd_prune()
 
     if args.command == "forward":
         return cmd_forward(args.name, args.method.upper(), args.path, args.data)
