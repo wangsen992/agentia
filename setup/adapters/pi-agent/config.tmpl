@@ -1,14 +1,12 @@
 {
   "agent_id": "{{ agent_id }}",
-  "adapter": "{{ adapter }}",
-  "provider": "{{ provider }}",
-  "model": "{{ model }}",
-  "workspace": "{{ workspace }}",
-  "role": {
-    "persona": "{% if backstory %}You are {{ agent_id }}. {{ backstory }}{% else %}You are {{ agent_id }}.{% endif %}",
-    "goal": "{{ role_goal }}",
-    "backstory": "{{ backstory }}"
-  },
+  "adapter_type": "{{ adapter }}",
+  "adapter_provider": "{{ provider }}",
+  "adapter_model": "{{ model }}",
+  "adapter_workspace": "{{ workspace }}",
+  "role_persona": "{% if backstory %}You are {{ agent_id }}. {{ backstory }}{% else %}You are {{ agent_id }}.{% endif %}",
+  "role_goal": "{{ role_goal }}",
+  "role_backstory": "{{ backstory }}",
   "skills": [{% for s in skills %}"{{ s }}"{% if not loop.last %}, {% endif %}{% endfor %}],
 {% if env %}
   "env": {

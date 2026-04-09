@@ -492,6 +492,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="AgentServer")
+    parser.add_argument("--config", help="Config file path (default: from AGENTIA_CONFIG env or ~/.agentia/agents/agent.json)")
     parser.add_argument("--agent-id", help="Agent ID (overrides config)")
     parser.add_argument("--host", help="Host to bind (overrides config)")
     parser.add_argument("--port", type=int, help="Port to bind (overrides config)")
@@ -511,8 +512,12 @@ def main():
                         help="Context %% threshold for auto-compact (overrides config)")
     args = parser.parse_args()
 
+    config_path_arg = (
+        Path(args.config) if args.config
+        else Path(os.environ.get("AGENTIA_CONFIG", str(DEFAULT_CONFIG_PATH)))
+    )
     server = AgentServer(
-        config_path=Path(os.environ.get("AGENTIA_CONFIG", str(DEFAULT_CONFIG_PATH))),
+        config_path=config_path_arg,
         agent_id=args.agent_id,
     )
 

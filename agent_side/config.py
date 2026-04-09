@@ -20,6 +20,9 @@ from typing import Optional
 DEFAULT_CONFIG_DIR = Path.home() / ".agentia" / "agents"
 DEFAULT_CONFIG_FILENAME = "agent.json"
 
+# Re-export for backward compat (used by server.py as fallback)
+DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / DEFAULT_CONFIG_FILENAME
+
 
 def default_config_path(agent_name: str) -> Path:
     """Compute the default config path for an agent."""

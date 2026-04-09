@@ -124,6 +124,7 @@ def cmd_serve(
     print(f"[agentia-agent] Starting AgentServer with config: {config_path}")
     cmd = [
         "python3", "/agent/agent_side/server.py",
+        "--config", str(config_path),
         "--session-ttl", str(session_ttl),
         "--max-sessions", str(max_sessions),
         "--context-threshold", str(context_threshold),
