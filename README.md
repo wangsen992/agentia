@@ -36,7 +36,7 @@ docker build -t agentia .
 docker run -d --name my-agent -p 18080:8080 \
     -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
     -v ~/.agentia/my-research-agent:/workspace \
-    agentia-agent serve \
+    agentia serve \
       --install pi-agent \
       --config ~/.agentia/my-research-agent/agent.json \
       --provider minimax \
@@ -97,9 +97,14 @@ agentia register <url> --name <name>     # connect to an agent
 agentia agents                           # list registered agents
 agentia send <name> <message>            # send message (blocks)
 agentia status <name>                    # get agent status
-agentia configure <name> <key> <value>   # live config update
-agentia update <name> [opts]              # re-render bootstrap + restart
-agentia deregister <name>                # remove from registry
+agentia configure <name> <key> <value>  # live config update
+agentia update <name> [opts]             # re-render bootstrap + restart
+agentia files <name> ls [path]          # list workspace files
+agentia files <name> get <path>         # read workspace file
+agentia files <name> put <path> -c "..." # write workspace file
+agentia files <name> delete <path>      # delete workspace file
+agentia snapshot <name> [out.tar.gz]   # snapshot workspace to .tar.gz
+agentia deregister <name>               # remove from registry
 agentia forward <name> <method> <path>  # raw HTTP passthrough
 ```
 
@@ -117,6 +122,10 @@ agentia forward <name> <method> <path>  # raw HTTP passthrough
 | POST | `/message/async` | Queue message; return correlation ID |
 | GET | `/response/{id}` | Poll for async response |
 | POST | `/restart` | Restart agent subprocess |
+| GET | `/files/<path>` | Read workspace file |
+| PUT | `/files/<path>` | Write workspace file (creates parent dirs) |
+| DELETE | `/files/<path>` | Delete workspace file or directory |
+| GET | `/files/` | List workspace directory |
 
 ### Status Response
 
@@ -225,6 +234,19 @@ relay/                # Host-side library (legacy)
 
 **`configure` vs `update`** — `configure` sends a live `PATCH /config` (delivery mode, polling interval). `update` sends a bootstrap change + `_restart: true`, which re-renders files and restarts the subprocess via `Harness.restart_agent()`.
 
+### Snapshot
+
+```bash
+# Snapshot an agent's workspace to a .tar.gz archive
+python3 cli/host.py snapshot my-research-agent
+# Output: my-research-agent-snapshot.tar.gz (~5 entries, ~4KB)
+
+# Restore: tar xzf my-research-agent-snapshot.tar.gz -C ~/.agentia/<name>/
+# Clone:   cp -r ~/.agentia/<name-A>/ ~/.agentia/<name-B>/
+```
+
+**The filesystem API and `snapshot` work over HTTP** — they work the same way whether the agent is a local Docker container or a remote SSH machine. No special access needed beyond the AgentServer HTTP endpoint.
+
 ---
 
 ## CLI Reference
@@ -257,6 +279,11 @@ python3 cli/host.py send <name> <message>            # Send message
 python3 cli/host.py status <name>                     # Show agent status
 python3 cli/host.py configure <name> <key> <value>   # Live config update
 python3 cli/host.py update <name> --role-goal "..."  # Update bootstrap + restart
+python3 cli/host.py files <name> ls [path]           # List workspace files
+python3 cli/host.py files <name> get <path>          # Read workspace file
+python3 cli/host.py files <name> put <path> -c "..." # Write workspace file
+python3 cli/host.py files <name> delete <path>       # Delete workspace file
+python3 cli/host.py snapshot <name> [out.tar.gz]    # Snapshot workspace
 python3 cli/host.py deregister <name>                # Remove from registry
 python3 cli/host.py forward <name> GET /status        # Raw HTTP passthrough
 ```
