@@ -17,6 +17,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 DEFAULT_REGISTRY = Path.home() / ".agentia" / "agents.json"
+CONV_BASE = Path.home() / ".agentia" / "conversations"
 
 
 # ─── Registry ────────────────────────────────────────────────────────────────
@@ -31,6 +32,165 @@ def _save_registry(data: dict, path: Path = DEFAULT_REGISTRY):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2))
 
+
+# ─── Conversation helpers (Layer A) ───────────────────────────────────────────
+
+CONV_BASE = Path.home() / ".agentia" / "conversations"
+
+
+def _conv_base() -> Path:
+    """Base directory for conversation registry."""
+    base = CONV_BASE
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _active_file(agent_name: str) -> Path:
+    """Path to the active-conversation index file for an agent."""
+    return _conv_base() / ".active" / f"{agent_name}.jsonl"
+
+
+def _get_active_conv(agent_name: str) -> dict | None:
+    """Read the active conversation for an agent. Returns {conv_id, session_name} or None."""
+    path = _active_file(agent_name)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def _set_active_conv(agent_name: str, conv_id: str, session_name: str):
+    """Update the active conversation index for an agent."""
+    path = _active_file(agent_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "conv_id": conv_id,
+        "session_name": session_name,
+        "last_active": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }, indent=2))
+
+
+def _get_agent_sessions(agent_name: str) -> list[dict]:
+    """Get the list of sessions from an agent via GET /sessions. Returns [] on failure."""
+    sessions = _http_get(agent_name, "/sessions")
+    if sessions is None:
+        return []
+    if isinstance(sessions, list):
+        return sessions
+    return []
+
+
+def _http_post_or_409(name: str, path: str, data: dict, timeout: float = 120) -> tuple[dict | None, bool]:
+    """Like _http_post but returns (response, is_409) instead of printing on HTTPError.
+
+    Returns (response_dict, False) on success.
+    Returns (None, True) on 409 Conflict.
+    Returns (None, False) on other errors.
+    """
+    url = _agent_url(name, path)
+    if not url:
+        return None, False
+    body = json.dumps(data).encode()
+    try:
+        req = Request(url, data=body, headers={"Content-Type": "application/json"})
+        with urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read()), False
+    except HTTPError as e:
+        if e.code == 409:
+            return None, True
+        return None, False
+    except URLError:
+        return None, False
+
+
+def _smart_route(agent_name: str, message: str, explicit_conv: str | None) -> dict | None:
+    """Route a message using the smart router.
+
+    Returns the agent response dict, or None on failure.
+    Prints its own error messages.
+
+    Routing logic (SPEC 021 Layer C):
+      1. If explicit_conv given -> use that
+      2. Read .active/<agent>.jsonl (host-side primary lookup)
+      3. Try sending to that session
+      4. On 409 (not running) -> GET /sessions -> most recent -> create new
+      5. If no .active/ -> GET /sessions -> most recent -> create new
+      6. If nothing -> create "default" session
+    """
+    # Step 1: Determine conversation to use
+    if explicit_conv:
+        conv_to_use = explicit_conv
+        session_name = explicit_conv
+    else:
+        active = _get_active_conv(agent_name)
+        if active:
+            conv_to_use = active["conv_id"]
+            session_name = active["session_name"]
+        else:
+            conv_to_use = None
+            session_name = None
+
+    # Step 2: Try to send to the session
+    if session_name:
+        response, is_409 = _http_post_or_409(
+            agent_name,
+            f"/sessions/{session_name}/message",
+            {"content": message},
+            timeout=120,
+        )
+        if response is not None:
+            _set_active_conv(agent_name, conv_to_use, conv_to_use)
+            return response
+        if not is_409:
+            print("[agentia] Failed to send message")
+            return None
+        # 409 — session not running, fall through to GET /sessions
+
+    # Step 3: Fall back to agent-side GET /sessions for authoritative lookup
+    sessions = _get_agent_sessions(agent_name)
+
+    def _sort_key(s):
+        return s.get("last_active", "")
+
+    sessions_sorted = sorted(sessions, key=_sort_key, reverse=True)
+
+    if sessions_sorted:
+        most_recent = sessions_sorted[0]
+        conv_to_use = most_recent.get("title") or most_recent.get("name", "default")
+        session_name = most_recent.get("name")
+
+        if session_name:
+            response, _ = _http_post_or_409(
+                agent_name,
+                f"/sessions/{session_name}/message",
+                {"content": message},
+                timeout=120,
+            )
+            if response is not None:
+                _set_active_conv(agent_name, conv_to_use, conv_to_use)
+                return response
+
+    # Step 4: Nothing available — create new "default" session
+    conv_to_use = "default"
+    response = _http_post(agent_name, "/sessions/new", {"name": conv_to_use}, timeout=10)
+    if not response:
+        print("[agentia] Session management unavailable, using legacy /message")
+        return _http_post(agent_name, "/message", {"content": message}, timeout=120)
+
+    response = _http_post(
+        agent_name,
+        f"/sessions/{conv_to_use}/message",
+        {"content": message},
+        timeout=120,
+    )
+    if response:
+        _set_active_conv(agent_name, conv_to_use, conv_to_use)
+    return response
+
+
+# ─── Registry ────────────────────────────────────────────────────────────────
 
 def _get_agent(name: str) -> dict | None:
     registry = _load_registry()
@@ -153,20 +313,26 @@ def cmd_agents() -> int:
 def cmd_send(name: str, message: str, conv: str | None = None) -> int:
     """Send a message to an agent. Blocks until response.
 
-    If conv is specified, uses the session management API.
-    Otherwise falls back to legacy /message endpoint.
+    If conv is specified, routes to that named conversation.
+    If conv is not specified, uses the smart router (Layer C):
+      - Reads .active/<agent>.jsonl for last-used conversation
+      - Falls back to GET /sessions for most recent agent-side session
+      - Creates "default" conversation if nothing exists
     """
     print(f"[agentia] Sending to '{name}'..." + (f" (conv={conv})" if conv else ""))
 
     if conv:
-        # Create/resume session, then send message
+        # Explicit conversation: create/resume then send
         session_info = _http_post(name, "/sessions/new", {"name": conv}, timeout=10)
         if not session_info:
             print(f"[agentia] Failed to create/resume session '{conv}'")
             return 1
         response = _http_post(name, f"/sessions/{conv}/message", {"content": message}, timeout=120)
+        if response:
+            _set_active_conv(name, conv, conv)
     else:
-        response = _http_post(name, "/message", {"content": message}, timeout=120)
+        # Smart router: implicit conversation routing
+        response = _smart_route(name, message, None)
 
     if not response:
         return 1
