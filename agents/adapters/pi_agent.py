@@ -133,8 +133,8 @@ class SessionManager:
         self._session_dir.mkdir(parents=True, exist_ok=True)
         self._manifest_path = self._session_dir / "manifest.jsonl"
 
-        # Load existing sessions from manifest
-        self._load_manifest()
+        # Lazy load: populate sessions on first access (not on every API call).
+        # AgentServer is the single writer; _upsert_manifest keeps disk in sync.
 
     # -------------------------------------------------------------------------
     # Manifest I/O
@@ -409,7 +409,8 @@ class SessionManager:
     # -------------------------------------------------------------------------
     def list_sessions(self) -> list[dict]:
         """List all sessions (running and stopped)."""
-        self._load_manifest()
+        if not self._sessions:
+            self._load_manifest()
         out = []
         for s in self._sessions.values():
             out.append({
@@ -424,7 +425,8 @@ class SessionManager:
 
     def get_session(self, name: str) -> Optional[dict]:
         """Get details for one session (resolves by title if not exact name)."""
-        self._load_manifest()
+        if not self._sessions:
+            self._load_manifest()
         resolved = self._resolve_name(name)
         if resolved is None:
             return None
@@ -518,7 +520,10 @@ class SessionManager:
         Send a message to a session. Creates/resumes if needed.
         Returns response dict.
         """
-        self._load_manifest()
+        # Load manifest only once at startup (not on every call).
+        # Subsequent calls use in-memory state; _upsert_manifest writes after each modification.
+        if not self._sessions:
+            self._load_manifest()
 
         # Resolve name to existing session if needed
         resolved_name = name
@@ -607,7 +612,8 @@ class SessionManager:
 
     def compact(self, name: str, message: str = "") -> dict:
         """Manually trigger compaction on a session."""
-        self._load_manifest()
+        if not self._sessions:
+            self._load_manifest()
         resolved = self._resolve_name(name)
         if resolved is None:
             return {"error": f"session not found: {name}"}
@@ -631,7 +637,8 @@ class SessionManager:
 
     def delete_session(self, name: str, hard: bool = False) -> dict:
         """Stop and optionally delete a session."""
-        self._load_manifest()
+        if not self._sessions:
+            self._load_manifest()
         resolved = self._resolve_name(name)
         if resolved is None:
             return {"error": f"session not found: {name}"}

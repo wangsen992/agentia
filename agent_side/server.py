@@ -11,7 +11,6 @@ Manages agent subprocess lifecycle via Harness.
 
 import json
 import os
-import re
 import sys
 import time
 import uuid
@@ -70,12 +69,6 @@ class AgentServer:
         if self._harness is not None:
             self._harness.stop()
             self._harness.teardown()
-
-    def stop(self):
-        """Stop the harness and server."""
-        if self._harness is not None:
-            self._harness.stop()
-            self._harness.teardown()
             self._harness = None
         if self._server is not None:
             self._server.shutdown()
@@ -118,7 +111,6 @@ class AgentServerHandler(BaseHTTPRequestHandler):
         path = self.path
 
         if path == "/config":
-            open('/tmp/debug_config_hit.txt', 'w').write("config route hit")
             self._send_json(200, self._harness.config.to_dict())
             return
 

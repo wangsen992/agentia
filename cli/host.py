@@ -10,6 +10,7 @@ Commands: register, agents, send, status, configure, update, deregister, forward
 
 import argparse
 import json
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -26,10 +27,10 @@ def _slugify_message(message: str, max_len: int = 50) -> str:
     Otherwise returns first `max_len` chars, slugified.
     """
     if len(message.strip()) < 10:
-        return f"session-{time.strftime("%Y-%m-%dT%H-%M-%S")}"
+        return f'session-{time.strftime("%Y-%m-%dT%H-%M-%S")}'
     slug = re.sub(r'[^a-zA-Z0-9\s]', '', message.lower())
     slug = re.sub(r'\s+', '-', slug).strip('-')[:max_len]
-    return slug or f"session-{time.strftime("%Y-%m-%dT%H-%M-%S")}"
+    return slug or f'session-{time.strftime("%Y-%m-%dT%H-%M-%S")}'
 
 
 
@@ -448,13 +449,16 @@ def cmd_send(name: str, message: str, conv: str | None = None, new_conv: bool = 
             return 1
         actual_name = session_info.get("name", conv)
         response = _http_post(name, f"/sessions/{actual_name}/message", {"content": message}, timeout=120)
-        if response:
-            _upsert_conv_from_send(
-                name, conv, actual_name,
-                message_count=response.get("message_count", 0),
-                context_pct=response.get("context_pct", 0),
-            )
-            _set_active_conv(name, conv, actual_name)
+        if not response:
+            print(f"[agentia] Session '{conv}' was created but message delivery failed. "
+                  f"The agent may be unavailable. Try --new to start fresh.")
+            return 1
+        _upsert_conv_from_send(
+            name, conv, actual_name,
+            message_count=response.get("message_count", 0),
+            context_pct=response.get("context_pct", 0),
+        )
+        _set_active_conv(name, conv, actual_name)
     else:
         # Smart router: implicit conversation routing
         response = _smart_route(name, message, None)
@@ -621,10 +625,11 @@ def cmd_files(name: str, subcmd: str, path: str, content: str | None) -> int:
         # Determine editor
         editor = os.environ.get("EDITOR")
         if not editor:
-            for candidate in ["code --wait", "nano", "vim", "vi"]:
-                result = subprocess.run(f"which {candidate.split()[0]}", shell=True, capture_output=True)
-                if result.returncode == 0:
-                    editor = candidate
+            # Check candidates in order; use shutil.which to avoid shell injection
+            for candidate in ["code", "nano", "vim", "vi"]:
+                if shutil.which(candidate):
+                    # Add --wait flag only for VS Code
+                    editor = f"{candidate} --wait" if candidate == "code" else candidate
                     break
         if not editor:
             print("[agentia] No editor found. Set $EDITOR or install nano/vim")
@@ -649,9 +654,10 @@ def cmd_files(name: str, subcmd: str, path: str, content: str | None) -> int:
             os.close(fd)
             raise
 
-        print(f"[agentia] Opening in {editor.split()[0]}... (save & close to upload changes)")
+        exe = editor.split()[0]
+        print(f"[agentia] Opening in {exe}... (save & close to upload changes)")
 
-        # Open in editor and wait
+        # Open in editor and wait — editor is already validated (shutil.which or $EDITOR)
         result = subprocess.run(editor.split() + [tmp_path])
         if result.returncode != 0:
             print(f"[agentia] Editor exited with code {result.returncode}")
@@ -773,7 +779,7 @@ def cmd_conv_show(conv_id: str) -> int:
     conv = _load_conv(conv_id)
     if conv.get("agent_name") == "":
         print(f"[agentia] Conversation '{conv_id}' not found.")
-        return 1
+        return 0  # Not found is a valid query result, not an error
     print(f"ID:          {conv['id']}")
     print(f"Title:       {conv.get('title', '')}")
     print(f"Agent:       {conv.get('agent_name', '')}")
@@ -792,7 +798,7 @@ def cmd_conv_rename(conv_id: str, title: str) -> int:
     conv = _load_conv(conv_id)
     if conv.get("agent_name") == "":
         print(f"[agentia] Conversation '{conv_id}' not found.")
-        return 1
+        return 0  # Not found is a valid query result, not an error
     old_title = conv.get("title", "")
     conv["title"] = title
     _save_conv(conv_id, conv)
@@ -805,7 +811,7 @@ def cmd_conv_tag(conv_id: str, tags: list[str], clear: bool = False) -> int:
     conv = _load_conv(conv_id)
     if conv.get("agent_name") == "":
         print(f"[agentia] Conversation '{conv_id}' not found.")
-        return 1
+        return 0  # Not found is a valid query result, not an error
     if clear:
         conv["tags"] = tags
     else:
@@ -823,7 +829,7 @@ def cmd_conv_delete(conv_id: str) -> int:
     path = _conv_file(conv_id)
     if not path.exists():
         print(f"[agentia] Conversation '{conv_id}' not found.")
-        return 1
+        return 0  # Not found is a valid query result, not an error
     path.unlink()
     print(f"[agentia] Deleted conversation registry: {conv_id}")
     return 0
@@ -1054,7 +1060,9 @@ def cmd_chat(name: str, conv: str | None = None, new_conv: bool = False) -> int:
                     print(f"[agentia] Failed to create conversation '{slug}'.")
                     continue
                 actual = si.get("name", slug)
-                _set_active_conv(name, actual, actual)
+                # conv_id = slug (user-facing Layer A id), session_name = actual (Layer B session name)
+                # Spec: .active/<agent>.jsonl stores {conv_id, session_name} per Layer A mapping
+                _set_active_conv(name, slug, actual)
                 _upsert_conv_from_send(name, slug, actual, message_count=0, context_pct=0)
                 current_conv_id = slug
                 current_session_name = actual
@@ -1301,7 +1309,7 @@ def main() -> int:
     # conv tag <conv_id> [--clear] [tags...]
     p_conv_tag = p_conv_sub.add_parser("tag", help="Tag a conversation")
     p_conv_tag.add_argument("conv_id", help="Conversation ID")
-    p_conv_tag.add_argument("--clear", action="store_true", help="Replace existing tags")
+    p_conv_tag.add_argument("--clear", action="store_true", help="Replace existing tags (default: merge with existing)")
     p_conv_tag.add_argument("tags", nargs="*", default=[], help="Tag(s) to add")
 
     # conv delete <conv_id>
