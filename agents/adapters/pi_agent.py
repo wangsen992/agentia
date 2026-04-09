@@ -636,13 +636,13 @@ class SessionManager:
         s.status = "deleted"
 
         if hard:
-            sf = self._session_dir / s.session_file
-            if sf.exists():
-                sf.unlink()
-            session_dir = self._session_dir / name
-            if session_dir.exists():
+            # Delete session file (JSONL in the session dir)
+            sf = self._session_dir / s.name
+            if sf.is_dir():
                 import shutil
-                shutil.rmtree(session_dir)
+                shutil.rmtree(sf)
+            elif sf.exists():
+                sf.unlink()
 
         # Remove from sessions dict
         del self._sessions[name]
