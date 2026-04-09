@@ -143,6 +143,11 @@ class AgentServerHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"messages": inbox_messages})
             return
 
+        # Files API: GET /files/<path>, LIST /files/<path>
+        if path.startswith("/files/"):
+            self._handle_files(path.removeprefix("/files/"), "")
+            return
+
         self._send_json(404, {"error": "not found"})
 
     def do_PUT(self):
@@ -154,15 +159,35 @@ class AgentServerHandler(BaseHTTPRequestHandler):
             self._harness._harness.config = new_config
             self._send_json(200, new_config.to_dict())
             return
+
+        if self.path.startswith("/files/"):
+            self._handle_files(self.path.removeprefix("/files/"), "PUT")
+            return
+
+        self._send_json(404, {"error": "not found"})
+
+    def do_DELETE(self):
+        if self.path.startswith("/files/"):
+            self._handle_files(self.path.removeprefix("/files/"), "DELETE")
+            return
         self._send_json(404, {"error": "not found"})
 
     def do_PATCH(self):
         if self.path == "/config":
             patch = self._read_json()
+
+            # Extract _restart before it reaches config_manager.update()
+            # (AgentServerConfig dataclass doesn't have _restart field)
+            do_restart = bool(patch.pop("_restart", False))
+
             new_config = self._harness.config_manager.update(patch)
             self._harness.config = new_config
             if self._harness._harness is not None:
                 self._harness._harness.config = new_config
+
+            if do_restart and self._harness._harness is not None:
+                self._harness._harness.restart_agent()
+
             self._send_json(200, new_config.to_dict())
             return
         self._send_json(404, {"error": "not found"})
@@ -266,6 +291,63 @@ class AgentServerHandler(BaseHTTPRequestHandler):
                 return resp
             time.sleep(poll_interval)
         return None
+
+    def _handle_files(self, file_path: str, method: str = "GET"):
+        """
+        Serve files from the agent workspace, scoped to /workspace.
+
+        GET  /files/<path>  → read file
+        PUT  /files/<path>  → write file (body = content)
+        DELETE /files/<path> → delete file/directory
+        LIST /files/<path>  → list directory
+        """
+        workspace = Path(os.path.expanduser(self._harness.config.adapter_workspace))
+        target = (workspace / file_path).resolve()
+
+
+        # Reject path traversal — ensure resolved path is under workspace
+        try:
+            target.relative_to(workspace)
+        except ValueError:
+            self._send_json(403, {"error": "forbidden", "reason": "path traversal"})
+            return
+
+        if method == "GET":
+            if target.is_file():
+                content = target.read_text()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content.encode())
+            elif target.is_dir():
+                entries = []
+                for entry in sorted(target.iterdir()):
+                    entries.append({"name": entry.name, "type": "directory" if entry.is_dir() else "file"})
+                self._send_json(200, {"path": file_path, "entries": entries})
+            else:
+                self._send_json(404, {"error": "not found"})
+            return
+
+        if method == "PUT":
+            target.parent.mkdir(parents=True, exist_ok=True)
+            content = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            target.write_bytes(content)
+            created = not any(p.name == target.name for p in target.parent.iterdir())
+            self._send_json(201 if created else 200, {"path": file_path})
+            return
+
+        if method == "DELETE":
+            if target.is_dir():
+                import shutil
+                shutil.rmtree(target)
+            elif target.is_file():
+                target.unlink()
+            else:
+                self._send_json(404, {"error": "not found"})
+                return
+            self._send_json(200, {"deleted": file_path})
+            return
 
     def log_message(self, format, *args):
         print(f"[AgentServer] {args[0]}", flush=True)

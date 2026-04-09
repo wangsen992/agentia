@@ -4,70 +4,156 @@
 
 ---
 
-## What Is This?
-
-Agentia has two sides:
-
-- **Host side** (`relay/`) — A Python process you run. Manages agent containers, sends messages, collects responses.
-- **Agent side** (`agent_side/`) — A container that runs inside Docker. Boots a Python HTTP server and spawns an agent subprocess.
+## Architecture
 
 ```
 Host (your machine)                     Agent (Docker container)
 ─────────────────                      ───────────────────────
-relay/backends/docker.py
+cli/host.py (agentia)                  cli/agent.py (agentia-agent)
   └─ HTTP POST /message ──────────────► agent_side/server.py
                                               └─ Harness
                                                     └─ PiAgentAdapter
-                                                          └─ `pi` subprocess
+                                                          └─ pi-agent subprocess
 ```
+
+**Agent side** and **host side** are fully separate CLIs. The host CLI manages agents over HTTP — it works the same whether the agent is in Docker, SSH, or bare metal.
 
 ---
 
 ## Quick Start
 
+### 1. Build the base image
+
 ```bash
-# 1. Build the generic agent image
 docker build -t agentia .
-
-# 2. One-time setup: install runtime, then commit the container as an image
-CONTAINER_ID=$(docker run -d agentia \
-    install pi-agent \
-    --config /etc/agentia/agent.json \
-    --provider minimax \
-    --model MiniMax-M2.7 \
-    --workspace /workspace)
-
-sleep 25  # wait for install (npm + file render) to finish
-docker commit $CONTAINER_ID my-agent-image
-docker rm $CONTAINER_ID
-
-# 3. Start AgentServer
-docker run -d --name my-agent -p 18080:8080 \
-    -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
-    my-agent-image agentserver
-
-# 4. Send a message
-curl -s -X POST http://localhost:18080/message \
-    -H "Content-Type: application/json" \
-    -d '{"content": "What can you do?"}'
 ```
 
-> **Note:** pi-agent requires an LLM API key. Set `MINIMAX_API_KEY` (or your provider's env var) on the `docker run` command above.
+### 2. Start an agent container (one-shot: install + serve)
 
-Or use the Python host-side library directly:
+```bash
+# Workspace lives at ~/.agentia/<name>/workspace on the host
+# Mount it into the container at /workspace
+docker run -d --name my-agent -p 18080:8080 \
+    -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
+    -v ~/.agentia/my-research-agent:/workspace \
+    agentia-agent serve \
+      --install pi-agent \
+      --config ~/.agentia/my-research-agent/agent.json \
+      --provider minimax \
+      --model MiniMax-M2.7 \
+      --workspace /workspace \
+      --role-goal "You are a helpful research assistant"
+```
 
-```python
-from relay.backends import DockerBackend, AgentEndpoint
-from relay.base import RelayMessage
+> All agent state — config, bootstrap files, skills, sessions — lives in `~/.agentia/<name>/` on the host. Snapshot the directory to snapshot the agent.
 
-backend = DockerBackend({
-    "my-agent": AgentEndpoint("my-agent", "localhost", 18080),
-})
+### 3. Register and manage from host
 
-msg = RelayMessage(content="What can you do?", to_agents=["my-agent"])
-response = backend.send_message(msg, "my-agent")
-print(response)
-backend.close()
+```bash
+# Install host CLI
+export PYTHONPATH=$PWD
+
+# Register the agent
+python3 cli/host.py register http://localhost:18080 --name my-research-agent
+
+# List registered agents
+python3 cli/host.py agents
+
+# Send a message
+python3 cli/host.py send my-research-agent "What can you do?"
+
+# Check status (shows adapter, provider, model)
+python3 cli/host.py status my-research-agent
+
+# Update agent config (live)
+python3 cli/host.py configure my-research-agent delivery inbox
+
+# Re-render bootstrap files and restart agent
+python3 cli/host.py update my-research-agent --role-goal "You specialize in turbulence modeling."
+
+# Deregister
+python3 cli/host.py deregister my-research-agent
+```
+
+---
+
+## Two CLIs
+
+### `agentia-agent` (agent side — runs in the container)
+
+```bash
+agentia-agent setup <adapter> [opts]   # render bootstrap + install runtime
+agentia-agent serve [opts]            # start AgentServer HTTP API
+```
+
+**`setup`** — renders AGENTS.md, SYSTEM.md, TOOLS.md and runs the adapter's install script (e.g., `npm install -g @mariozechner/pi-coding-agent`). Must be called once before first `serve`.
+
+**`serve`** — starts the AgentServer HTTP API. With `--install <adapter>`, runs `setup` first in the same container start — no `docker commit` workaround needed.
+
+### `agentia` (host side — runs on your machine)
+
+```bash
+agentia register <url> --name <name>     # connect to an agent
+agentia agents                           # list registered agents
+agentia send <name> <message>            # send message (blocks)
+agentia status <name>                    # get agent status
+agentia configure <name> <key> <value>   # live config update
+agentia update <name> [opts]              # re-render bootstrap + restart
+agentia deregister <name>                # remove from registry
+agentia forward <name> <method> <path>  # raw HTTP passthrough
+```
+
+---
+
+## AgentServer HTTP API
+
+| Method | Endpoint | What it does |
+|--------|----------|--------------|
+| GET | `/status` | Agent health, delivery mode, adapter, provider, model |
+| GET | `/config` | Get current config |
+| PATCH | `/config` | Update config (`_restart: true` restarts agent subprocess) |
+| PUT | `/config` | Replace entire config |
+| POST | `/message` | Send message; blocks until agent finishes |
+| POST | `/message/async` | Queue message; return correlation ID |
+| GET | `/response/{id}` | Poll for async response |
+| POST | `/restart` | Restart agent subprocess |
+
+### Status Response
+
+`GET /status` returns:
+
+```json
+{
+  "agent_id": "agent-001",
+  "delivery": "inbox",
+  "adapter": "pi-agent",
+  "provider": "minimax",
+  "model": "MiniMax-M2.7",
+  "uptime": 26.7,
+  "running": true,
+  "ready": true
+}
+```
+
+---
+
+## Registry
+
+Host registry: `~/.agentia/agents.json`
+
+```json
+{
+  "version": 1,
+  "agents": {
+    "my-research-agent": {
+      "url": "http://localhost:18080",
+      "name": "my-research-agent",
+      "registered_at": "2026-04-08T...",
+      "last_seen_at": "2026-04-08T...",
+      "metadata": {}
+    }
+  }
+}
 ```
 
 ---
@@ -76,15 +162,14 @@ backend.close()
 
 ### AgentServer
 
-Every agent container runs `agentia agentserver` on start. It exposes an HTTP API:
+Every agent container runs `agentia-agent serve`. It exposes an HTTP API that the host CLI talks to. No Docker/container management from the host CLI — those are handled by `docker` CLI directly.
 
-| Method | Endpoint | What it does |
-|--------|----------|--------------|
-| POST | `/message` | Send a message; blocks until agent finishes; returns response |
-| POST | `/message/async` | Queue message immediately; returns a correlation ID |
-| GET | `/response/{id}` | Poll for an async response |
-| GET | `/status` | Health check |
-| PATCH | `/config` | Update delivery mode (`sync` or `inbox`) |
+### Delivery Modes
+
+- **`sync`** — Harness calls the subprocess directly, returns response immediately
+- **`inbox`** — Harness polls a file queue; useful when the subprocess is busy or long-running
+
+Configure with `agentia configure <name> delivery sync`.
 
 ### Agent Adapters
 
@@ -95,104 +180,90 @@ pi --mode rpc        # stdin/stdout JSONL protocol
                      # Reads bootstrap files: AGENTS.md, SYSTEM.md, TOOLS.md
 ```
 
-To add a new runtime (e.g. openclaw, AutoGen), implement `AgentAdapter` and register it in `agents/adapters/factory.py`.
-
-### Delivery Modes
-
-Inside the container, `Harness` delivers messages to the agent subprocess:
-
-- **`sync`** — Harness calls the subprocess directly, returns response immediately
-- **`inbox`** — Harness polls a file queue; useful when the subprocess is busy or long-running
-
 ---
 
 ## Project Layout
 
 ```
-relay/                       # Host-side library
-├── backends/docker.py       # HTTP client → AgentServer
-├── backends/ssh.py          # SSH + curl → remote AgentServer
-└── base.py                  # RelayMessage dataclass
+cli/
+    agent.py          # Agent-side CLI (agentia-agent)
+    host.py           # Host-side CLI (agentia)
 
-agent_side/                  # Container-side server
-├── server.py                # AgentServer HTTP API
-├── harness.py               # Spawns and manages agent subprocess
-├── config.py                # AgentServerConfig dataclass
-└── patterns/
-    ├── inbox.py             # Inbox delivery pattern
-    └── sync.py              # Sync delivery pattern
+agent_side/           # Container-side server
+    server.py         # AgentServer HTTP API
+    harness.py        # Spawns and manages agent subprocess
+    config.py         # AgentServerConfig + ConfigManager
+    patterns/
+        inbox.py      # Inbox delivery pattern
+        sync.py       # Sync delivery pattern
 
-agents/adapters/             # Agent runtime adapters
-├── pi_agent.py              # pi-agent adapter (primary)
-├── openclaw.py              # OpenClaw adapter (legacy)
-└── factory.py               # get_adapter() — pi-agent is default
+agents/adapters/      # Agent runtime adapters
+    pi_agent.py       # pi-agent adapter (primary)
+    openclaw.py       # OpenClaw adapter (legacy)
+    factory.py        # get_adapter()
 
-setup/adapters/              # Per-adapter setup templates
-├── pi-agent/
-│   ├── install.sh           # Runtime install (npm install)
-│   ├── config.tmpl          # Jinja2 → /etc/agentia/agent.json
-│   └── bootstrap/           # Jinja2 → AGENTS.md, SYSTEM.md, TOOLS.md
-└── openclaw/                # Legacy adapter
-```
+setup/adapters/       # Per-adapter setup templates
+    pi-agent/
+        install.sh    # Runtime install (npm install)
+        config.tmpl  # Jinja2 → /etc/agentia/agent.json
+        bootstrap/   # Jinja2 → AGENTS.md, SYSTEM.md, TOOLS.md
 
----
-
-## CLI Reference
-
-```bash
-# Install runtime + render config inside a running container
-docker run --rm agentia install pi-agent \
-    --config /etc/agentia/agent.json \
-    --provider minimax \
-    --model MiniMax-M2.7 \
-    --workspace /workspace
-
-# Start AgentServer (blocks — runs inside container)
-docker run -d --name my-agent agentia agentserver
-
-# Container lifecycle (host side)
-agentia create <image> <name>           # Create container from image
-agentia start <name>                   # Start container
-agentia stop <name>                    # Stop container
-agentia destroy <name>                 # Remove container
-agentia agents                        # List all containers
-agentia send <name> <message>          # Send message via HTTP
-agentia logs <name>                    # Container logs
+relay/                # Host-side library (legacy)
+    backends/docker.py
+    backends/ssh.py
 ```
 
 ---
 
 ## Design Decisions
 
-**pi-agent over OpenClaw** — Transparent bootstrap via plain files. No hidden system prompt injection. Subprocess-per-agent is simple and debuggable.
+**Separate CLIs** — agent side (`agentia-agent`) and host side (`agentia`) are fully independent. Host CLI works the same whether the agent is in Docker, SSH, or bare metal.
 
 **HTTP between host and agent** — AgentServer is a simple HTTP server inside the container. No custom binary protocol, no shared filesystem required. Works identically whether the container is local (Docker) or remote (SSH + curl).
 
-**Generic base image** — The Docker image contains Python + Node.js. The agent runtime (pi-agent) is installed at container start via `agentia install`. This keeps the image simple and adapter-specific dependencies out of the base.
+**Registry as local convenience** — The host CLI maps friendly names to URLs. Operations like `send`, `status`, `configure` all work by name lookup. If you know the URL directly, you can use `forward` without registering.
 
-**Inbox delivery by default** — The harness polls for responses rather than blocking the subprocess. This means the subprocess can be mid-task when a new message arrives — the message waits in the inbox file queue.
+**`configure` vs `update`** — `configure` sends a live `PATCH /config` (delivery mode, polling interval). `update` sends a bootstrap change + `_restart: true`, which re-renders files and restarts the subprocess via `Harness.restart_agent()`.
 
 ---
 
-## SPECs
+## CLI Reference
 
-| # | Status | Description |
-|---|--------|-------------|
-| 001 | done | Repository structure |
-| 002 | done | Agent adapter abstraction |
-| 003 | done | Adapter-specific container images |
-| 005 | done | Relay/Inbox architecture |
-| 006 | done | Orchestration patterns |
-| 007 | done | Agent provision + workspace |
-| 009 | done | AgentServer API |
+### Agent Side (in container)
 
-Full specs at `specs/` and in each adapter's directory.
+```bash
+# One-shot: install runtime + render config + start AgentServer
+# Config and workspace default to ~/.agentia/ (no root needed)
+agentia-agent serve \
+    --install pi-agent \
+    --config ~/.agentia/agent.json \
+    --provider minimax \
+    --model MiniMax-M2.7 \
+    --workspace /workspace
+
+# Or two-step: setup first, then serve
+agentia-agent setup pi-agent --config ~/.agentia/agent.json ...
+agentia-agent serve --config ~/.agentia/agent.json
+```
+
+### Host Side (on your machine)
+
+```bash
+export PYTHONPATH=$PWD  # to run without installing
+
+python3 cli/host.py register <url> --name <name>     # Connect to agent
+python3 cli/host.py agents                            # List registered agents
+python3 cli/host.py send <name> <message>            # Send message
+python3 cli/host.py status <name>                     # Show agent status
+python3 cli/host.py configure <name> <key> <value>   # Live config update
+python3 cli/host.py update <name> --role-goal "..."  # Update bootstrap + restart
+python3 cli/host.py deregister <name>                # Remove from registry
+python3 cli/host.py forward <name> GET /status        # Raw HTTP passthrough
+```
 
 ---
 
 ## References
 
-- [Issue #17 — pi-agent as primary runtime](https://github.com/wangsen992/agentia/issues/17)
+- [SPEC 010 — CLI Interface](./specs/010_cli_interface.md)
 - [pi-agent RPC protocol](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/rpc.md)
-- [SPEC 009 — AgentServer API](./specs/009_agentserver_api.md)
-- [SPEC 005 — Relay/Inbox Architecture](./specs/005_relay_inbox.md)

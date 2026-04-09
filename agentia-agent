@@ -1,0 +1,4 @@
+#!/bin/bash
+# Agent-side CLI launcher
+# Source lives at /agent/cli (never shadowed by /workspace mount)
+exec python3 /agent/cli/agent.py "$@"

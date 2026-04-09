@@ -34,7 +34,7 @@ adapters/
 2. Add `install.sh` — shell script that installs the runtime (npm, pip, etc.)
 3. Add `config.tmpl` — Jinja2 template for `/etc/agentia/agent.json`
 4. Add `bootstrap/*.tmpl` — Jinja2 templates for agent bootstrap files
-5. Update the `agentia install` CLI subcommand to recognize the new adapter
+5. Update the `agentia-agent setup` CLI subcommand to recognize the new adapter
 
 ## Template Variables
 

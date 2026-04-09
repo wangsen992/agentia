@@ -5,12 +5,17 @@
   "model": "{{ model }}",
   "workspace": "{{ workspace }}",
   "role": {
-    "persona": "{% if role_persona %}{{ role_persona }}{% else %}You are {{ agent_id }}.{% endif %}",
+    "persona": "{% if backstory %}You are {{ agent_id }}. {{ backstory }}{% else %}You are {{ agent_id }}.{% endif %}",
     "goal": "{{ role_goal }}",
     "backstory": "{{ backstory }}"
   },
   "skills": [{% for s in skills %}"{{ s }}"{% if not loop.last %}, {% endif %}{% endfor %}],
+{% if env %}
   "env": {
-    {% for k, v in env.items() %}"{{ k }}": "{{ v }}"{% if not loop.last %}, {% endif %}{% endfor %}
+{% for k, v in env.items() %}    "{{ k }}": "{{ v }}"{% if not loop.last %},{% endif %}
+{% endfor %}
   }
+{% else %}
+  "env": {}
+{% endif %}
 }

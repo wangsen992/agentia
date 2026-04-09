@@ -1,12 +1,25 @@
 # Agentia Agent Container
 #
 # Generic base image for agent containers.
-# Runtime (pi-agent, OpenClaw, etc.) is installed at container start via:
-#   agentia install <adapter> --config /etc/agentia/agent.json
+#
+# Layout in image:
+#   /agent/       ← agent source code (baked in, not affected by workspace mount)
+#   /workspace/  ← user workspace (mounted from ~/.agentia/<name>/ at runtime)
+#
+# Agent-side CLI: agentia-agent setup | agentia-agent serve
 #
 # Usage:
 #   docker build -t agentia .
-#   docker run -d --name my-agent -p 18000:8080 agentia agentserver
+#   docker run -d --name my-agent -p 18000:8080 \
+#       -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
+#       -v ~/.agentia/my-agent:/workspace \
+#       agentia-agent serve \
+#         --install pi-agent \
+#         --config ~/.agentia/my-agent/agent.json \
+#         --provider minimax \
+#         --model MiniMax-M2.7 \
+#         --workspace /workspace \
+#         --role-goal "You are a helpful assistant"
 
 FROM python:3.12-slim
 
@@ -20,16 +33,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 
 RUN pip3 install requests jinja2 --break-system-packages
 
-COPY agents/ /workspace/agents/
-COPY relay/ /workspace/relay/
-COPY agent_side/ /workspace/agent_side/
-COPY setup/ /usr/local/bin/setup/
-COPY constants.py /workspace/
+# Agent source baked into /agent/ — never shadowed by /workspace mount
+COPY agents/ /agent/agents/
+COPY relay/ /agent/relay/
+COPY agent_side/ /agent/agent_side/
+COPY setup/ /agent/setup/
+COPY constants.py /agent/
+COPY cli/ /agent/cli/
 
-WORKDIR /workspace
+# Entrypoint + ENTRYPOINT both use the source at /agent/ (never mounted over)
+COPY agentia-agent /usr/local/bin/agentia-agent
+RUN chmod +x /usr/local/bin/agentia-agent
 
-COPY agentia /usr/local/bin/agentia
-RUN chmod +x /usr/local/bin/agentia
+HEALTHCHECK CMD curl -sf http://localhost:8080/status || exit 1
 
-ENTRYPOINT ["agentia"]
-CMD ["agentserver"]
+ENTRYPOINT ["agentia-agent"]
+CMD ["serve"]

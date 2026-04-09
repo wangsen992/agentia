@@ -24,15 +24,15 @@ class AgentServerConfig:
     port: int = 8080
     delivery: str = "inbox"
     poll_interval: float = 2.0
-    inbox_dir: str = "/workspace/inbox"
-    responses_dir: str = "/workspace/inbox/responses"
+    inbox_dir: str = "~/.agentia/workspace/inbox"
+    responses_dir: str = "~/.agentia/workspace/inbox/responses"
     agent_timeout: int = 120
     log_level: str = "info"
 
     adapter_type: str = "pi-agent"
     adapter_provider: str = "minimax"
     adapter_model: str = "MiniMax-M2.7"
-    adapter_workspace: str = "/workspace"
+    adapter_workspace: str = "~/.agentia/workspace"
 
     role_persona: str = ""
     role_goal: str = ""

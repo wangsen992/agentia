@@ -206,15 +206,44 @@ def cmd_install(
     return 0
 
 
-def cmd_agentserver():
+def cmd_agentserver(
+    install_adapter: str | None,
+    config_path: str,
+    agent_id: str,
+    provider: str,
+    model: str,
+    workspace: str,
+    role_goal: str,
+    backstory: str,
+    skills: list[str],
+    var_overrides: dict,
+    setup_dir: Path,
+):
     """
     Start AgentServer.
 
-    Reads config from AGENTIA_CONFIG (default: /etc/agentia/agent.json)
-    and AGENT_* env vars for overrides.
+    If --install <adapter> is given, renders config + bootstrap templates,
+    runs the runtime install script, then starts AgentServer.
+    All in one shot — no docker commit workaround needed.
     """
-    config_path = os.environ.get("AGENTIA_CONFIG", "/etc/agentia/agent.json")
-    workspace = os.environ.get("AGENT_WORKSPACE", "/workspace")
+    if install_adapter:
+        print(f"[agentia] Installing {install_adapter} runtime...")
+        result = cmd_install(
+            adapter=install_adapter,
+            config_path=config_path,
+            agent_id=agent_id,
+            provider=provider,
+            model=model,
+            workspace=workspace,
+            role_goal=role_goal,
+            backstory=backstory,
+            skills=skills,
+            var_overrides=var_overrides,
+            setup_dir=setup_dir,
+        )
+        if result != 0:
+            print(f"[agentia] Install failed, not starting AgentServer")
+            return result
 
     print(f"[agentia] Starting AgentServer with config: {config_path}")
     os.execvp(
@@ -719,7 +748,20 @@ def main() -> int:
     p_install.add_argument("--var", action="append", default=[], dest="vars",
                            help="key=value template variable override")
 
-    p_agentserver = sub.add_parser("agentserver", help="Start AgentServer")
+    p_agentserver = sub.add_parser("agentserver", help="Start AgentServer (with optional runtime install)")
+    p_agentserver.add_argument("--install", choices=["pi-agent", "openclaw"], default=None,
+                           help="Install runtime first (renders config + bootstrap, runs install.sh)")
+    p_agentserver.add_argument("--config", default="/etc/agentia/agent.json",
+                           help="Config output path")
+    p_agentserver.add_argument("--agent-id", default="agent-001", help="Agent ID")
+    p_agentserver.add_argument("--provider", default="minimax", help="LLM provider")
+    p_agentserver.add_argument("--model", default="MiniMax-M2.7", help="Model name")
+    p_agentserver.add_argument("--workspace", default="/workspace", help="Agent workspace path")
+    p_agentserver.add_argument("--role-goal", default="", help="Agent role goal")
+    p_agentserver.add_argument("--backstory", default="", help="Agent backstory")
+    p_agentserver.add_argument("--skills", action="append", default=[], help="Skill name (can repeat)")
+    p_agentserver.add_argument("--var", action="append", default=[], dest="vars",
+                           help="key=value template variable override")
 
     p_image = sub.add_parser("image", help="Image management (list/build/inspect/rm)")
     p_image_sub = p_image.add_subparsers(dest="subcommand", metavar="<subcommand>")
@@ -797,7 +839,24 @@ def main() -> int:
         )
 
     if args.command == "agentserver":
-        cmd_agentserver()
+        var_overrides = {}
+        for v in getattr(args, "vars", []):
+            if "=" in v:
+                k, val = v.split("=", 1)
+                var_overrides[k] = val
+        cmd_agentserver(
+            install_adapter=args.install,
+            config_path=args.config,
+            agent_id=args.agent_id,
+            provider=args.provider,
+            model=args.model,
+            workspace=args.workspace,
+            role_goal=args.role_goal,
+            backstory=args.backstory,
+            skills=args.skills or [],
+            var_overrides=var_overrides,
+            setup_dir=setup_dir,
+        )
         return 1
 
     docker_check = subprocess.run(

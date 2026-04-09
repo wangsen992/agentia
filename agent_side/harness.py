@@ -103,6 +103,9 @@ class Harness:
         return {
             "agent_id": self.agent_id,
             "delivery": self.config.delivery,
+            "adapter": self.config.adapter_type,
+            "provider": self.config.adapter_provider,
+            "model": self.config.adapter_model,
             "uptime": time.time() - self._uptime if self._uptime else 0,
             "running": self._running,
         }

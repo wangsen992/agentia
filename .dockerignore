@@ -1,0 +1,17 @@
+.git
+.gitignore
+*.md
+!setup/adapters/openclaw/*.md
+!setup/adapters/pi-agent/bootstrap/*.md
+review/
+research/
+specs/
+containers/
+examples/
+.DS_Store
+*.pyc
+__pycache__/
+*.egg-info/
+.coverage
+.pytest_cache/
+NEXT-STEPS.md
