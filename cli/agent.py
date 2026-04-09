@@ -7,16 +7,21 @@ Commands: setup, serve
 """
 
 import argparse
+import argparse
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-import os
-from pathlib import Path
-
-DEFAULT_CONFIG_PATH = Path.home() / ".agentia" / "agent.json"
-DEFAULT_WORKSPACE = Path.home() / ".agentia" / "workspace"
+# Default paths for agent setup.
+# When running inside a Docker container with a bind mount at /workspace,
+# these resolve inside the container. The Docker run command overrides them
+# with explicit --workspace and --config arguments.
+#
+# New design: host ~/.agentia/agents/<name>/ mounted to container ~/.pi/agent/
+# PI_DIR is set via environment variable.
+DEFAULT_CONFIG_PATH = Path.home() / ".agentia" / "agents"  # parent; agent name appended at runtime
+DEFAULT_WORKSPACE = Path.home() / ".pi" / "agent"
 
 
 def cmd_setup(

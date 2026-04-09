@@ -121,7 +121,7 @@ class SessionManager:
         self._provider = provider
         self._model = model
         self._timeout = timeout
-        self._session_dir = Path(session_dir) if session_dir else self._workspace / ".agentia" / "sessions"
+        self._session_dir = Path(session_dir) if session_dir else self._workspace / ".pi" / "sessions"
         self._idle_ttl = idle_ttl
         self._max_sessions = max_sessions
         self._context_threshold_pct = context_threshold_pct
@@ -240,13 +240,18 @@ class SessionManager:
     # Subprocess lifecycle
     # -------------------------------------------------------------------------
     def _build_pi_args(self, session: Session) -> list[str]:
-        """Build the pi command-line args for a session."""
+        """Build the pi command-line args for a session.
+
+        pi-agent natural layout: ~/.pi/agent/sessions/<session-name>/session.jsonl
+        We mount host's ~/.agentia/agents/<name>/ to container's ~/.pi/agent/,
+        so sessions end up at host's ~/.agentia/agents/<name>/.pi/sessions/<name>/.
+        """
         pi_args = [
             "pi",
             "--mode", "rpc",
             "--provider", self._provider,
             "--model", self._model,
-            "--session-dir", str(self._session_dir / session.name),
+            "--session-dir", str(self._session_dir),
             "--continue",
         ]
         agents_file = self._workspace / "AGENTS.md"

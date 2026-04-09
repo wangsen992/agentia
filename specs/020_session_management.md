@@ -16,7 +16,7 @@ Each **conversation** maps to one **named pi subprocess** with its own session f
 ## Data Model
 
 ```
-/workspace/.agentia/sessions/
+/root/.pi/agent/.pi/sessions/
   manifest.jsonl                        ← session registry (one JSON per line)
   2026-04-09T00-22-30_hawaii.jsonl   ← timestamp-prefixed, pi session file
   2026-04-09T00-22-45_trip-planning.jsonl
@@ -218,7 +218,7 @@ Sessions not resumed within `max_session_age` after being stopped are marked `ar
   "max_sessions": 10,
   "max_session_age": 2592000,
   "context_threshold_pct": 75,
-  "session_dir": "/workspace/.agentia/sessions"
+  "session_dir": "/root/.pi/agent/.pi/sessions"
 }
 ```
 

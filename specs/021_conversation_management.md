@@ -22,9 +22,9 @@ Four layers work together to provide seamless conversation management:
 │  Host machine (~/.agentia/)                                          │
 │                                                                     │
 │  Layer A: conversations/          Layer C: Smart Router               │
-│    hawaii-trip.jsonl               send without --conv               │
-│    crocus-cfd.jsonl                → looks up last conv for agent      │
-│    tax-2025.jsonl                  → resumes existing or creates new   │
+│    .active/                        send without --conv               │
+│    hawaii-trip.jsonl              → looks up last conv for agent      │
+│    crocus-cfd.jsonl               → resumes existing or creates new   │
 │                                                                     │
 │  Layer D: REPL (agentia chat)                                        │
 │    agentia chat <name>                                             │
@@ -342,26 +342,33 @@ When the CLI routes a message:
 
 ```
 ~/.agentia/
-  conversations/                    ← Layer A
+  agents/                           ← agent workspaces (one per agent)
+    my-research-agent/
+      .pi/sessions/               ← Layer B: session files
+        manifest.jsonl
+        2026-04-09T00-22-30_hawaii/
+        2026-04-09T01-10-00_crocus/
+      .pi/skills/                 ← pi-agent skills
+      AGENTS.md
+      SYSTEM.md
+    my-accountant-agent/
+      ...
+  conversations/                    ← Layer A: conversation registry
     .active/                       ←   active conversation per agent
       my-research-agent.jsonl
-      my-accountant-agent.jsonl
     hawaii-trip.jsonl
     crocus-cfd.jsonl
-    tax-2025.jsonl
-    archive/                        ←   archived conversations
-      2026-03-01_shopping.jsonl
-  my-research-agent/                ← agent workspace
-    .agentia/sessions/             ← Layer B (inside container workspace)
-      manifest.jsonl
-      2026-04-09T00-22-30_hawaii/
-      2026-04-09T01-10-00_crocus/
-    AGENTS.md
-    SYSTEM.md
-  my-accountant-agent/
-    .agentia/sessions/
-      ...
+  history/                          ← REPL command history
+    my-research-agent.hist
 ```
+
+**Host → Container mount:**
+```
+~/.agentia/agents/<name>/   →   ~/.pi/agent/   (pi-agent's natural home)
+```
+
+pi-agent stores everything naturally at `~/.pi/agent/` inside the container,
+which maps to `~/.agentia/agents/<name>/` on the host. One mount per agent.
 
 ---
 

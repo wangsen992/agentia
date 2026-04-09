@@ -2,9 +2,12 @@
 #
 # Generic base image for agent containers.
 #
-# Layout in image:
-#   /agent/       ← agent source code (baked in, not affected by workspace mount)
-#   /workspace/  ← user workspace (mounted from ~/.agentia/<name>/ at runtime)
+# Design principle: one mount per agent, at the agent's natural path.
+# For pi-agent: host ~/.agentia/agents/<name>/ mounted to ~/.pi/agent/ (pi's natural home).
+#
+# Container layout:
+#   /agent/       ← agent source code (baked in, never shadowed by mount)
+#   ~/.pi/agent/  ← agent workspace (mounted from host ~/.agentia/agents/<name>/)
 #
 # Agent-side CLI: agentia-agent setup | agentia-agent serve
 #
@@ -12,13 +15,14 @@
 #   docker build -t agentia .
 #   docker run -d --name my-agent -p 18000:8080 \
 #       -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
-#       -v ~/.agentia/my-agent:/workspace \
+#       -e PI_DIR=/root/.pi/agent \
+#       -v ~/.agentia/agents/my-agent:/root/.pi/agent \
 #       agentia-agent serve \
 #         --install pi-agent \
-#         --config ~/.agentia/my-agent/agent.json \
+#         --config /root/.pi/agent/agent.json \
 #         --provider minimax \
 #         --model MiniMax-M2.7 \
-#         --workspace /workspace \
+#         --workspace /root/.pi/agent \
 #         --role-goal "You are a helpful assistant"
 
 FROM python:3.12-slim

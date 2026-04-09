@@ -32,18 +32,20 @@ docker build -t agentia .
 ### 2. Start an agent container
 
 ```bash
+# pi-agent natural design: mount host workspace to ~/.pi/agent/ inside container
 docker run -d --name my-agent -p 18080:8080 \
     -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
-    -v ~/.agentia/my-research-agent:/workspace \
+    -e PI_DIR=/root/.pi/agent \
+    -v ~/.agentia/agents/my-research-agent:/root/.pi/agent \
     agentia serve \
       --install pi-agent \
-      --config ~/.agentia/my-research-agent/agent.json \
+      --config /root/.pi/agent/agent.json \
       --provider minimax \
       --model MiniMax-M2.7 \
-      --workspace /workspace
+      --workspace /root/.pi/agent
 ```
 
-> All agent state — config, bootstrap files, skills, sessions — lives in `~/.agentia/<name>/` on the host. Snapshot the directory to snapshot the agent.
+> All agent state — config, bootstrap files, skills, sessions — lives in `~/.agentia/agents/<name>/` on the host. pi-agent uses its natural layout (`~/.pi/agent/`) inside the container. Snapshot: `cp -r ~/.agentia/agents/my-research-agent/`.
 
 ### 3. Manage from host
 
@@ -213,17 +215,17 @@ Snapshot and Files API work over HTTP — no special access needed beyond the Ag
 # One-shot: install runtime + start AgentServer
 agentia-agent serve \
     --install pi-agent \
-    --config ~/.agentia/agent.json \
+    --config /root/.pi/agent/agent.json \
     --provider minimax \
     --model MiniMax-M2.7 \
-    --workspace /workspace \
+    --workspace /root/.pi/agent \
     --session-ttl 300 \
     --max-sessions 5 \
     --context-threshold 80
 
 # Or two-step
-agentia-agent setup pi-agent --config ~/.agentia/agent.json ...
-agentia-agent serve --config ~/.agentia/agent.json
+agentia-agent setup pi-agent --config /root/.pi/agent/agent.json ...
+agentia-agent serve --config /root/.pi/agent/agent.json
 ```
 
 ### `cli/host.py` — host-side (runs on your machine)
@@ -326,7 +328,7 @@ README.md
 
 **Session management is server-owned (Option A)** — AgentServer owns session state: the manifest, subprocesses, idle timers, LRU eviction. The host CLI is a dumb client that calls the API. This mirrors how OpenClaw manages Jarvis's sessions.
 
-**Workspace lives on the host** — `~/.agentia/<name>/` is bind-mounted into the container at `/workspace`. The host has full access to all agent state. Snapshot is just `cp -r`.
+**Workspace lives on the host** — `~/.agentia/agents/<name>/` is bind-mounted into the container at `~/.pi/agent/` (pi-agent's natural home). The host has full access to all agent state. Snapshot: `cp -r ~/.agentia/agents/<name>/`.
 
 **pi-agent for agent runtime** — `pi --mode rpc` gives us a robust JSONL stdin/stdout protocol, session files, built-in compaction, and tool execution. The `AGENTS.md` system prompt is injected via `--append-system-prompt`.
 

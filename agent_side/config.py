@@ -1,19 +1,29 @@
 """
 AgentServer configuration management.
 
-Config is stored on disk at ~/.agentia/agent.json.
+Config is stored on disk at ~/.agentia/agents/<name>/agent.json.
 AgentServer reads config at startup and can receive runtime updates via PATCH /config.
+
+Design principle: one workspace per agent, mounted at the agent's natural path.
+For pi-agent: host ~/.agentia/agents/<name>/ mounted to ~/.pi/agent/ in container.
 """
 
 import json
-import os
 import threading
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
 
-DEFAULT_CONFIG_PATH = Path.home() / ".agentia" / "agent.json"
+# Default config path: ~/.agentia/agents/<name>/agent.json
+# Set dynamically when agent is provisioned (see ConfigManager)
+DEFAULT_CONFIG_DIR = Path.home() / ".agentia" / "agents"
+DEFAULT_CONFIG_FILENAME = "agent.json"
+
+
+def default_config_path(agent_name: str) -> Path:
+    """Compute the default config path for an agent."""
+    return DEFAULT_CONFIG_DIR / agent_name / DEFAULT_CONFIG_FILENAME
 
 
 @dataclass
@@ -29,14 +39,24 @@ class AgentServerConfig:
     agent_timeout: int = 120
     log_level: str = "info"
 
+    # Adapter configuration
     adapter_type: str = "pi-agent"
     adapter_provider: str = "minimax"
     adapter_model: str = "MiniMax-M2.7"
+    # adapter_workspace: path inside the container where the agent workspace is mounted.
+    # For pi-agent with natural mount: /workspace (mounted from host ~/.agentia/agents/<name>/)
     adapter_workspace: str = "/workspace"
 
-    session_idle_ttl: int = 1800
-    max_sessions: int = 10
-    context_threshold_pct: int = 75
+    # Session management
+    session_idle_ttl: int = 1800       # seconds before idle session is stopped
+    max_sessions: int = 10             # max concurrent sessions (LRU eviction)
+    context_threshold_pct: int = 75     # auto-compact at this % of context window
+
+    # pi-agent specific
+    # PI_DIR is set via environment variable, not config.
+    # session_dir: path for session files (inside adapter_workspace).
+    #   Defaults to adapter_workspace / ".pi" / "sessions"
+    #   Set explicitly when starting SessionManager.
 
     role_persona: str = ""
     role_goal: str = ""
@@ -60,19 +80,20 @@ class ConfigManager:
     """
 
     def __init__(self, config_path: Optional[Path] = None):
-        self._config_path = config_path or DEFAULT_CONFIG_PATH
+        self._config_path = config_path
         self._lock = threading.RLock()
         self._config: Optional[AgentServerConfig] = None
         self._ensure_dir()
         self.load()
 
     def _ensure_dir(self):
-        self._config_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._config_path:
+            self._config_path.parent.mkdir(parents=True, exist_ok=True)
 
     def load(self) -> AgentServerConfig:
         """Load config from disk, or return default if none exists."""
         with self._lock:
-            if self._config_path.exists():
+            if self._config_path and self._config_path.exists():
                 try:
                     data = json.loads(self._config_path.read_text())
                     self._config = AgentServerConfig.from_dict(data)
@@ -95,15 +116,7 @@ class ConfigManager:
             return self._config
 
     def update(self, patch: dict) -> AgentServerConfig:
-        """
-        Apply a partial update to config and save.
-
-        Args:
-            patch: dict with fields to update (e.g. {"delivery": "sync"})
-
-        Returns:
-            Updated config.
-        """
+        """Apply a partial update to config and save."""
         with self._lock:
             current = self._config.to_dict()
             current.update(patch)
@@ -112,15 +125,7 @@ class ConfigManager:
             return self._config
 
     def replace(self, config: AgentServerConfig) -> AgentServerConfig:
-        """
-        Replace entire config and save.
-
-        Args:
-            config: Full AgentServerConfig to save.
-
-        Returns:
-            New config.
-        """
+        """Replace entire config and save."""
         with self._lock:
             self._config = config
             self._save()
