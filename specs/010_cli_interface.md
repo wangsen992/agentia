@@ -147,22 +147,25 @@ Remove an agent from the local registry. Does NOT stop the remote agent.
 
 ---
 
-## Discovery: How Does an Agent Find Peers?
+## Discovery: mesh.json
 
-Each machine maintains `peers.json` listing known peer agents by name and URL:
+Each agent pulls from `mesh.json` to discover peers. The file lives in a shared, writable location accessible to all agents — git repo, shared NFS volume, or simple HTTP server.
 
 ```json
 {
-  "peers": {
-    "research-agent": "http://vm-research.example.com:8080",
-    "coding-agent": "http://192.168.1.50:8080"
+  "mesh": {
+    "agents": {
+      "research-agent": "http://vm-research.example.com:8080",
+      "coding-agent": "http://vm-coding.example.com:8080",
+      "review-agent": "http://192.168.1.50:8080"
+    }
   }
 }
 ```
 
-The agent is told (via system prompt or config) which peer to contact for which task. No auto-discovery — peers are registered explicitly.
-
-**V1:** Static config. Future: DNS-SD/mDNS or a central registry.
+- **How agents use it:** on boot and periodically, agents pull `mesh.json` and update their local `peers.json`
+- **How changes propagate:** you edit `mesh.json` from any machine, push/sync, and all agents pick it up on their next pull
+- **No central server required:** `mesh.json` can live in git, on a shared drive, or on any HTTP server. Any machine with access can update it — no special admin machine needed
 
 ---
 
@@ -202,7 +205,7 @@ This enables the peer-to-peer mesh: any agent can reach any other agent by URL, 
 
 ### Why `peers.json` separate from `agents.json`?
 - `agents.json` — agents registered from this machine's perspective (host-side view)
-- `peers.json` — agents this machine's agent can reach (agent-side view, may be a subset)
+- `peers.json` — local copy of `mesh.json`, updated on boot and periodically
 
 The agent doesn't need to know about every agent the human has registered. It only needs to know peers it can use for specific tasks.
 
@@ -215,6 +218,6 @@ The agent doesn't need to know about every agent the human has registered. It on
 
 ## Open Questions
 
-1. **Registry sync** — should `peers.json` on remote machines auto-sync from the host's `agents.json`?
+1. ~~**Registry sync**~~ — resolved: `peers.json` auto-pulls from `mesh.json` on boot and periodically
 2. **Capability enforcement** — should `host.py` validate target URLs against a whitelist, or trust the system prompt?
 3. **Async communication** — for long-running tasks, should agents use `/message/async` + polling instead of blocking sends?

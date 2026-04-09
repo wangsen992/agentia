@@ -108,15 +108,16 @@ Agent B sends the response back to Agent A by calling A's HTTP API.
 ## File Layout
 
 ```
+mesh.json                # central mesh config: all agents and their URLs (shared, git, or HTTP)
 ~/.agentia/
 ├── agents.json          # host-side registry: name → URL mapping
 ├── conversations/       # host-side conversation state
-└── peers.json          # peer agents known from this machine (name → URL)
+└── peers.json          # local copy of mesh.json, updated on boot and periodically
 
 # On each remote machine:
 ~/.agentia/
-├── agents.json          # local registry (may differ from host's)
-└── peers.json          # mirrors known peers for this machine
+├── agents.json          # local registry
+└── peers.json          # local copy of mesh.json
 ```
 
 ---
@@ -155,9 +156,42 @@ cli/
 
 ---
 
+## Discovery: mesh.json
+
+Each agent pulls from `mesh.json` to discover peers. The file lives in a shared, writable location accessible to all agents.
+
+```json
+{
+  "mesh": {
+    "agents": {
+      "research-agent": "http://vm-research.example.com:8080",
+      "coding-agent": "http://vm-coding.example.com:8080",
+      "review-agent": "http://192.168.1.50:8080"
+    }
+  }
+}
+```
+
+- **Where it lives:** git repo, shared NFS volume, simple HTTP server, or a dedicated registry machine
+- **How agents use it:** on boot and periodically, agents pull `mesh.json` and update their local `peers.json`
+- **How changes propagate:** you edit `mesh.json` from any machine (no special admin machine required), push/sync, and all agents pick it up on their next pull
+- **No central server required:** `mesh.json` is just a file. Any machine with access to that location can update it
+
+### Why this works without a central server
+
+`mesh.json` doesn't need to be served by a special process. It can be:
+- A file in a git repository that all machines pull from
+- A file on a shared network drive (NFS, SMB)
+- A simple static file served by any HTTP server
+- A file on a dedicated "admin" machine that you SSH into
+
+The admin machine isn't architecturally special — it's just whichever machine you happen to be on when you update `mesh.json`.
+
+---
+
 ## Open Questions
 
 1. ~~**HostContainerBackend**~~ — resolved: removed, HTTP-to-HTTP is the only transport
-2. **Discovery** — how do agents learn peer URLs? V1: static `peers.json` config
+2. ~~**Discovery**~~ — resolved: `mesh.json` + local `peers.json` with periodic pull
 3. **Scenario 1 vs 2** — V1 uses Scenario 1 (polling). Scenario 2 (proactive delivery) deferred until a machine needs a publicly reachable HTTP endpoint
 4. **Moderator role** — can an agent act as moderator for sub-agents? Uses same mesh communication; no spec changes needed
