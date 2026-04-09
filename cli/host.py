@@ -346,18 +346,20 @@ def cmd_send(name: str, message: str, conv: str | None = None, new_conv: bool = 
         if not session_info:
             print(f"[agentia] Failed to create new session '{conv_name}'")
             return 1
-        response = _http_post(name, f"/sessions/{conv_name}/message", {"content": message}, timeout=120)
+        actual_name = session_info.get("name", conv_name)
+        response = _http_post(name, f"/sessions/{actual_name}/message", {"content": message}, timeout=120)
         if response:
-            _set_active_conv(name, conv_name, conv_name)
+            _set_active_conv(name, actual_name, actual_name)
     elif conv:
         # Explicit conversation: create/resume then send
         session_info = _http_post(name, "/sessions/new", {"name": conv}, timeout=10)
         if not session_info:
             print(f"[agentia] Failed to create/resume session '{conv}'")
             return 1
-        response = _http_post(name, f"/sessions/{conv}/message", {"content": message}, timeout=120)
+        actual_name = session_info.get("name", conv)
+        response = _http_post(name, f"/sessions/{actual_name}/message", {"content": message}, timeout=120)
         if response:
-            _set_active_conv(name, conv, conv)
+            _set_active_conv(name, actual_name, actual_name)
     else:
         # Smart router: implicit conversation routing
         response = _smart_route(name, message, None)
