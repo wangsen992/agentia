@@ -11,6 +11,7 @@ Manages agent subprocess lifecycle via Harness.
 
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -22,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent_side.config import AgentServerConfig, ConfigManager, DEFAULT_CONFIG_PATH
 from agent_side.harness import Harness
+from agents.adapters.pi_agent import SessionManager
 
 
 class AgentServer:
@@ -44,12 +46,30 @@ class AgentServer:
         self._harness: Optional[Harness] = None
         self._start_time = time.time()
         self._server: Optional[HTTPServer] = None
+        # Session manager for multi-session support
+        self._session_manager: Optional[SessionManager] = None
 
     def start(self):
-        """Start the harness (delivery pattern background thread)."""
+        """Start the harness and session manager."""
         self._harness = Harness(self.agent_id, self.config)
         self._harness.start()
+        self._session_manager = SessionManager(
+            workspace=self.config.adapter_workspace,
+            provider=self.config.adapter_provider,
+            model=self.config.adapter_model,
+            timeout=self.config.agent_timeout,
+            idle_ttl=self.config.session_idle_ttl,
+            max_sessions=self.config.max_sessions,
+            context_threshold_pct=self.config.context_threshold_pct,
+        )
         print(f"[AgentServer] Started on {self.config.host}:{self.config.port}")
+        print(f"[AgentServer] Session manager: idle_ttl={self.config.session_idle_ttl}s, max_sessions={self.config.max_sessions}, context_threshold={self.config.context_threshold_pct}%")
+
+    def stop(self):
+        """Stop the harness and server."""
+        if self._harness is not None:
+            self._harness.stop()
+            self._harness.teardown()
 
     def stop(self):
         """Stop the harness and server."""
@@ -149,6 +169,53 @@ class AgentServerHandler(BaseHTTPRequestHandler):
             self._handle_files(path.removeprefix("/files/"), "GET")
             return
 
+        # Session management
+        sm = self._harness._session_manager
+        if sm is None:
+            self._send_json(503, {"error": "session manager not initialized"})
+            return
+
+        if path == "/sessions":
+            self._send_json(200, sm.list_sessions())
+            return
+
+        if path.startswith("/sessions/"):
+            parts = path.split("/sessions/")[1].split("/", 1)
+            name = parts[0]
+            rest = parts[1] if len(parts) > 1 else ""
+
+            if not name:
+                self._send_json(400, {"error": "session name required"})
+                return
+
+            if rest == "":
+                # GET /sessions/<name> — get session details
+                result = sm.get_session(name)
+                if result is None:
+                    self._send_json(404, {"error": f"session not found: {name}"})
+                else:
+                    self._send_json(200, result)
+                return
+
+            if rest == "message":
+                # POST /sessions/<name>/message
+                self._handle_session_message(name)
+                return
+
+            if rest == "compact":
+                # POST /sessions/<name>/compact
+                data = self._read_json()
+                result = sm.compact(name, data.get("message", ""))
+                if "error" in result:
+                    self._send_json(400, result)
+                else:
+                    self._send_json(200, result)
+                return
+
+            # GET /sessions/<name>/... — check for sub-resources
+            self._send_json(404, {"error": "not found"})
+            return
+
         self._send_json(404, {"error": "not found"})
 
     def do_PUT(self):
@@ -171,6 +238,23 @@ class AgentServerHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/files/"):
             self._handle_files(self.path.removeprefix("/files/"), "DELETE")
             return
+
+        sm = self._harness._session_manager
+        if sm is None:
+            self._send_json(503, {"error": "session manager not initialized"})
+            return
+
+        if self.path.startswith("/sessions/"):
+            raw = self.path.split("/sessions/")[1]
+            name = raw.split("?")[0]
+            hard = "hard" in raw
+            result = sm.delete_session(name, hard=hard)
+            if "error" in result:
+                self._send_json(404, result)
+            else:
+                self._send_json(200, result)
+            return
+
         self._send_json(404, {"error": "not found"})
 
     def do_PATCH(self):
@@ -208,6 +292,41 @@ class AgentServerHandler(BaseHTTPRequestHandler):
 
         if path == "/message/async":
             self._handle_message_async()
+            return
+
+        sm = self._harness._session_manager
+
+        if path == "/sessions/new":
+            if sm is None:
+                self._send_json(503, {"error": "session manager not initialized"})
+                return
+            data = self._read_json()
+            result = sm.new_session(
+                name=data.get("name"),
+                title=data.get("title"),
+            )
+            self._send_json(200, result)
+            return
+
+        if path.startswith("/sessions/"):
+            if sm is None:
+                self._send_json(503, {"error": "session manager not initialized"})
+                return
+            parts = path.split("/sessions/")[1].split("/", 1)
+            name = parts[0]
+            rest = parts[1] if len(parts) > 1 else ""
+            if rest == "message":
+                self._handle_session_message(name)
+                return
+            if rest == "compact":
+                data = self._read_json()
+                result = sm.compact(name, data.get("message", ""))
+                if "error" in result:
+                    self._send_json(400, result)
+                else:
+                    self._send_json(200, result)
+                return
+            self._send_json(404, {"error": "not found"})
             return
 
         self._send_json(404, {"error": "not found"})
@@ -292,6 +411,22 @@ class AgentServerHandler(BaseHTTPRequestHandler):
                 return resp
             time.sleep(poll_interval)
         return None
+
+    def _handle_session_message(self, name: str):
+        """Handle POST /sessions/<name>/message."""
+        sm = self._harness._session_manager
+        data = self._read_json()
+        content = data.get("content", "")
+        result = sm.send_message(name, content)
+        if "error" in result:
+            if result.get("error", "").startswith("session not"):
+                self._send_json(404, result)
+            elif "not running" in result.get("error", ""):
+                self._send_json(409, result)
+            else:
+                self._send_json(400, result)
+        else:
+            self._send_json(200, result)
 
     def _handle_files(self, file_path: str, method: str = "GET"):
         """

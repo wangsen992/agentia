@@ -150,14 +150,34 @@ def cmd_agents() -> int:
     return 0
 
 
-def cmd_send(name: str, message: str) -> int:
-    """Send a message to an agent. Blocks until response."""
-    print(f"[agentia] Sending to '{name}'...")
-    response = _http_post(name, "/message", {"content": message}, timeout=120)
+def cmd_send(name: str, message: str, conv: str | None = None) -> int:
+    """Send a message to an agent. Blocks until response.
+
+    If conv is specified, uses the session management API.
+    Otherwise falls back to legacy /message endpoint.
+    """
+    print(f"[agentia] Sending to '{name}'..." + (f" (conv={conv})" if conv else ""))
+
+    if conv:
+        # Create/resume session, then send message
+        session_info = _http_post(name, "/sessions/new", {"name": conv}, timeout=10)
+        if not session_info:
+            print(f"[agentia] Failed to create/resume session '{conv}'")
+            return 1
+        response = _http_post(name, f"/sessions/{conv}/message", {"content": message}, timeout=120)
+    else:
+        response = _http_post(name, "/message", {"content": message}, timeout=120)
+
     if not response:
         return 1
     content = response.get("content", response.get("stdout", ""))
-    print(content)
+    if isinstance(content, dict):
+        # Session API returns structured response
+        print(response.get("response", content))
+        if response.get("compact_triggered"):
+            print(f"[agentia] Auto-compacted (context threshold reached)")
+    else:
+        print(content)
     return 0
 
 
@@ -466,6 +486,70 @@ def cmd_prune() -> int:
     return 0
 
 
+def cmd_sessions_list(name: str) -> int:
+    """List all sessions for an agent."""
+    sessions = _http_get(name, "/sessions")
+    if sessions is None:
+        print("[agentia] Failed to list sessions — agent may not support session management")
+        return 1
+    if not sessions:
+        print("No sessions.")
+        return 0
+    print(f"{'NAME':<45} {'TITLE':<20} {'STATUS':<10} {'MSGS':>5} {'CTX%':>5} {'LAST ACTIVE'}")
+    print("-" * 100)
+    for s in sessions:
+        name_s = s.get("name", "")[:44]
+        title = s.get("title", "")[:19]
+        status = s.get("status", "?")[:9]
+        msgs = s.get("message_count", 0)
+        ctx = s.get("context_pct", 0)
+        last = s.get("last_active", "-")
+        print(f"{name_s:<45} {title:<20} {status:<10} {msgs:>5} {ctx:>5}% {last}")
+    return 0
+
+
+def cmd_compact(name: str, conv: str) -> int:
+    """Manually trigger compaction on a session."""
+    print(f"[agentia] Compacting session '{conv}' on '{name}'...")
+    result = _http_post(name, f"/sessions/{conv}/compact", {"message": ""}, timeout=30)
+    if result is None:
+        print("[agentia] Failed — session may not exist or not running")
+        return 1
+    if "error" in result:
+        print(f"[agentia] Error: {result['error']}")
+        return 1
+    print(f"[agentia] Compacted: before={result.get('message_count_before','?')} msgs, "
+          f"after={result.get('message_count_after','?')} msgs, "
+          f"ctx={result.get('context_pct','?')}%")
+    return 0
+
+
+def cmd_session_delete(name: str, conv: str, hard: bool = False) -> int:
+    """Delete a session (stop subprocess, optionally delete session file)."""
+    path = f"/sessions/{conv}" + ("?hard=true" if hard else "")
+    # Use _http_post with DELETE method via cmd_forward
+    print(f"[agentia] Deleting session '{conv}' on '{name}'" + (" (hard)" if hard else ""))
+    from urllib.request import Request
+    agent = _get_agent(name)
+    if not agent:
+        print(f"[agentia] Agent '{name}' not found")
+        return 1
+    url = f"{agent['url'].rstrip('/')}{path}"
+    try:
+        req = Request(url, method="DELETE")
+        with urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            print(f"[agentia] Deleted: {data}")
+            return 0
+    except HTTPError as e:
+        body = e.read().decode(errors="replace")
+        print(f"[agentia] HTTP {e.code}: {body[:300]}")
+        return 1
+    except Exception as e:
+        print(f"[agentia] Error: {e}")
+        return 1
+
+
 def cmd_forward(name: str, method: str, path: str, data: str | None) -> int:
     """Forward a raw HTTP request to the agent."""
     url = _agent_url(name, path)
@@ -543,6 +627,8 @@ def main() -> int:
     p_send = sub.add_parser("send", help="Send a message to an agent")
     p_send.add_argument("name", help="Agent name")
     p_send.add_argument("message", nargs="...", help="Message to send")
+    p_send.add_argument("--conv", "-c", dest="conv", default=None,
+                        help="Conversation/session name (enables session management)")
 
     # status <name>
     p_status = sub.add_parser("status", help="Get agent status")
@@ -567,6 +653,25 @@ def main() -> int:
 
     # prune
     sub.add_parser("prune", help="Remove unreachable agents from registry")
+
+    # sessions <name> — list sessions
+    p_sess = sub.add_parser("sessions", help="List agent sessions")
+    p_sess.add_argument("name", help="Agent name")
+
+    # compact <name> [--conv <conv>] — trigger compaction
+    p_comp = sub.add_parser("compact", help="Trigger session compaction")
+    p_comp.add_argument("name", help="Agent name")
+    p_comp.add_argument("--conv", "-c", dest="conv", required=True,
+                        help="Conversation name to compact")
+
+    # session delete <name> <conv> [--hard]
+    p_sdel = sub.add_parser("session", help="Delete a session")
+    p_sdel_sub = p_sdel.add_subparsers(dest="session_cmd")
+    p_sdel_del = p_sdel_sub.add_parser("delete", help="Delete a session")
+    p_sdel_del.add_argument("name", help="Agent name")
+    p_sdel_del.add_argument("conv", help="Conversation name")
+    p_sdel_del.add_argument("--hard", action="store_true",
+                            help="Also delete session file (not just stop subprocess)")
 
     # forward <name> <method> <path>
     p_fwd = sub.add_parser("forward", help="Forward raw HTTP to agent")
@@ -609,7 +714,19 @@ def main() -> int:
 
     if args.command == "send":
         message = " ".join(args.message) if args.message else ""
-        return cmd_send(args.name, message)
+        return cmd_send(args.name, message, conv=getattr(args, "conv", None))
+
+    if args.command == "sessions":
+        return cmd_sessions_list(args.name)
+
+    if args.command == "compact":
+        return cmd_compact(args.name, args.conv)
+
+    if args.command == "session":
+        if args.session_cmd == "delete":
+            return cmd_session_delete(args.name, args.conv, args.hard)
+        parser.print_help()
+        return 1
 
     if args.command == "status":
         return cmd_status(args.name)

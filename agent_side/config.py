@@ -34,6 +34,10 @@ class AgentServerConfig:
     adapter_model: str = "MiniMax-M2.7"
     adapter_workspace: str = "/workspace"
 
+    session_idle_ttl: int = 1800
+    max_sessions: int = 10
+    context_threshold_pct: int = 75
+
     role_persona: str = ""
     role_goal: str = ""
     role_backstory: str = ""
