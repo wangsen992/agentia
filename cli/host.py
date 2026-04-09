@@ -85,6 +85,75 @@ def _set_active_conv(agent_name: str, conv_id: str, session_name: str):
     }, indent=2))
 
 
+def _conv_file(conv_id: str) -> Path:
+    """Path to the conversation metadata file."""
+    return _conv_base() / f"{conv_id}.jsonl"
+
+
+def _load_conv(conv_id: str) -> dict:
+    """Load a conversation record. Returns minimal default if missing."""
+    path = _conv_file(conv_id)
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, IOError):
+            pass
+    return {
+        "id": conv_id,
+        "title": conv_id,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "last_active": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "message_count": 0,
+        "agent_name": "",
+        "session_name": "",
+        "status": "active",
+        "context_pct": 0,
+        "tags": [],
+    }
+
+
+def _save_conv(conv_id: str, data: dict):
+    """Save a conversation record."""
+    path = _conv_file(conv_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2))
+
+
+def _upsert_conv_from_send(agent_name: str, conv_id: str, session_name: str,
+                            message_count: int = 0, context_pct: int = 0,
+                            status: str = "active"):
+    """Create or update a Layer A conversation file after a send."""
+    conv = _load_conv(conv_id)
+    conv["id"] = conv_id
+    conv["title"] = conv.get("title") or conv_id
+    conv["last_active"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+    conv["message_count"] = message_count
+    conv["agent_name"] = agent_name
+    conv["session_name"] = session_name
+    conv["status"] = status
+    conv["context_pct"] = context_pct
+    _save_conv(conv_id, conv)
+
+
+def _list_convs(agent_name: str | None = None) -> list[dict]:
+    """List all conversations, optionally filtered by agent."""
+    base = _conv_base()
+    if not base.exists():
+        return []
+    convs = []
+    for fp in base.glob("*.jsonl"):
+        if fp.name.startswith("."):
+            continue
+        try:
+            conv = json.loads(fp.read_text())
+            if agent_name is None or conv.get("agent_name") == agent_name:
+                convs.append(conv)
+        except (json.JSONDecodeError, IOError):
+            continue
+    convs.sort(key=lambda c: c.get("last_active", ""), reverse=True)
+    return convs
+
+
 def _get_agent_sessions(agent_name: str) -> list[dict]:
     """Get the list of sessions from an agent via GET /sessions. Returns [] on failure."""
     sessions = _http_get(agent_name, "/sessions")
@@ -154,6 +223,11 @@ def _smart_route(agent_name: str, message: str, explicit_conv: str | None) -> di
             timeout=120,
         )
         if response is not None:
+            _upsert_conv_from_send(
+                agent_name, conv_to_use, session_name,
+                message_count=response.get("message_count", 0),
+                context_pct=response.get("context_pct", 0),
+            )
             _set_active_conv(agent_name, conv_to_use, conv_to_use)
             return response
         if not is_409:
@@ -182,6 +256,11 @@ def _smart_route(agent_name: str, message: str, explicit_conv: str | None) -> di
                 timeout=120,
             )
             if response is not None:
+                _upsert_conv_from_send(
+                    agent_name, conv_to_use, session_name,
+                    message_count=response.get("message_count", 0),
+                    context_pct=response.get("context_pct", 0),
+                )
                 _set_active_conv(agent_name, conv_to_use, conv_to_use)
                 return response
 
@@ -192,14 +271,20 @@ def _smart_route(agent_name: str, message: str, explicit_conv: str | None) -> di
         print("[agentia] Session management unavailable, using legacy /message")
         return _http_post(agent_name, "/message", {"content": message}, timeout=120)
 
+    actual_name = response.get("name", conv_to_use)
     response = _http_post(
         agent_name,
-        f"/sessions/{conv_to_use}/message",
+        f"/sessions/{actual_name}/message",
         {"content": message},
         timeout=120,
     )
     if response:
-        _set_active_conv(agent_name, conv_to_use, conv_to_use)
+        _upsert_conv_from_send(
+            agent_name, conv_to_use, actual_name,
+            message_count=response.get("message_count", 0),
+            context_pct=response.get("context_pct", 0),
+        )
+        _set_active_conv(agent_name, conv_to_use, actual_name)
     return response
 
 
@@ -349,6 +434,11 @@ def cmd_send(name: str, message: str, conv: str | None = None, new_conv: bool = 
         actual_name = session_info.get("name", conv_name)
         response = _http_post(name, f"/sessions/{actual_name}/message", {"content": message}, timeout=120)
         if response:
+            _upsert_conv_from_send(
+                name, actual_name, actual_name,
+                message_count=response.get("message_count", 0),
+                context_pct=response.get("context_pct", 0),
+            )
             _set_active_conv(name, actual_name, actual_name)
     elif conv:
         # Explicit conversation: create/resume then send
@@ -359,7 +449,12 @@ def cmd_send(name: str, message: str, conv: str | None = None, new_conv: bool = 
         actual_name = session_info.get("name", conv)
         response = _http_post(name, f"/sessions/{actual_name}/message", {"content": message}, timeout=120)
         if response:
-            _set_active_conv(name, actual_name, actual_name)
+            _upsert_conv_from_send(
+                name, conv, actual_name,
+                message_count=response.get("message_count", 0),
+                context_pct=response.get("context_pct", 0),
+            )
+            _set_active_conv(name, conv, actual_name)
     else:
         # Smart router: implicit conversation routing
         response = _smart_route(name, message, None)
@@ -650,6 +745,104 @@ def cmd_deregister(name: str) -> int:
     return 0
 
 
+# ─── Conv commands (Phase 2) ──────────────────────────────────────────────────
+
+def cmd_conv_list(agent_name: str | None = None) -> int:
+    """List all conversations, optionally filtered by agent."""
+    convs = _list_convs(agent_name)
+    if not convs:
+        print("No conversations found." +
+              (f" for agent '{agent_name}'" if agent_name else ""))
+        return 0
+    print(f"{'CONV ID':<40} {'AGENT':<25} {'STATUS':<8} {'MSGS':<5} {'%':<4} {'LAST ACTIVE':<20} TITLE")
+    for c in convs:
+        print(
+            f"{c['id']:<40} "
+            f"{c.get('agent_name', ''):<25} "
+            f"{c.get('status', '?'):<8} "
+            f"{c.get('message_count', 0):<5} "
+            f"{c.get('context_pct', 0):<4} "
+            f"{c.get('last_active', ''):<20} "
+            f"{c.get('title', '')}"
+        )
+    return 0
+
+
+def cmd_conv_show(conv_id: str) -> int:
+    """Show full details of a conversation."""
+    conv = _load_conv(conv_id)
+    if conv.get("agent_name") == "":
+        print(f"[agentia] Conversation '{conv_id}' not found.")
+        return 1
+    print(f"ID:          {conv['id']}")
+    print(f"Title:       {conv.get('title', '')}")
+    print(f"Agent:       {conv.get('agent_name', '')}")
+    print(f"Session:     {conv.get('session_name', '')}")
+    print(f"Status:      {conv.get('status', '')}")
+    print(f"Messages:    {conv.get('message_count', 0)}")
+    print(f"Context:     {conv.get('context_pct', 0)}%")
+    print(f"Tags:        {', '.join(conv.get('tags', []) or ['(none)'])}")
+    print(f"Created:     {conv.get('created_at', '')}")
+    print(f"Last active: {conv.get('last_active', '')}")
+    return 0
+
+
+def cmd_conv_rename(conv_id: str, title: str) -> int:
+    """Rename a conversation."""
+    conv = _load_conv(conv_id)
+    if conv.get("agent_name") == "":
+        print(f"[agentia] Conversation '{conv_id}' not found.")
+        return 1
+    old_title = conv.get("title", "")
+    conv["title"] = title
+    _save_conv(conv_id, conv)
+    print(f"Renamed '{conv_id}': '{old_title}' -> '{title}'")
+    return 0
+
+
+def cmd_conv_tag(conv_id: str, tags: list[str], clear: bool = False) -> int:
+    """Tag a conversation (--clear to replace, otherwise append)."""
+    conv = _load_conv(conv_id)
+    if conv.get("agent_name") == "":
+        print(f"[agentia] Conversation '{conv_id}' not found.")
+        return 1
+    if clear:
+        conv["tags"] = tags
+    else:
+        existing = set(conv.get("tags", []))
+        for t in tags:
+            existing.add(t)
+        conv["tags"] = sorted(existing)
+    _save_conv(conv_id, conv)
+    print(f"Tags for '{conv_id}': {', '.join(conv['tags'])}")
+    return 0
+
+
+def cmd_conv_delete(conv_id: str) -> int:
+    """Delete a conversation from the registry (does not touch agent session)."""
+    path = _conv_file(conv_id)
+    if not path.exists():
+        print(f"[agentia] Conversation '{conv_id}' not found.")
+        return 1
+    path.unlink()
+    print(f"[agentia] Deleted conversation registry: {conv_id}")
+    return 0
+
+
+def cmd_conv_use(conv_id: str, agent_name: str) -> int:
+    """Set active conversation for an agent (updates routing)."""
+    conv = _load_conv(conv_id)
+    if conv.get("agent_name") == "":
+        print(f"[agentia] Conversation '{conv_id}' not found.")
+        return 1
+    session_name = conv.get("session_name", conv_id)
+    _set_active_conv(agent_name, conv_id, session_name)
+    print(f"[agentia] Active conversation for '{agent_name}' set to '{conv_id}'")
+    return 0
+
+
+# ─── Prune ────────────────────────────────────────────────────────────────────
+
 def cmd_prune() -> int:
     """Remove unreachable agents from the registry."""
     registry = _load_registry()
@@ -845,6 +1038,38 @@ def main() -> int:
     p_upd.add_argument("--backstory", default="", help="New backstory")
     p_upd.add_argument("--skills", action="append", default=[], help="Skill name")
 
+    # conv <subcommand> [<args>]
+    p_conv = sub.add_parser("conv", help="Conversation management (Phase 2)")
+    p_conv_sub = p_conv.add_subparsers(dest="conv_cmd", help="Conv subcommand")
+
+    # conv list [--agent <name>]
+    p_conv_list = p_conv_sub.add_parser("list", help="List conversations")
+    p_conv_list.add_argument("--agent", default=None, help="Filter by agent name")
+
+    # conv show <conv_id>
+    p_conv_show = p_conv_sub.add_parser("show", help="Show conversation details")
+    p_conv_show.add_argument("conv_id", help="Conversation ID")
+
+    # conv rename <conv_id> --title <title>
+    p_conv_rename = p_conv_sub.add_parser("rename", help="Rename a conversation")
+    p_conv_rename.add_argument("conv_id", help="Conversation ID")
+    p_conv_rename.add_argument("--title", required=True, help="New title")
+
+    # conv tag <conv_id> [--clear] [tags...]
+    p_conv_tag = p_conv_sub.add_parser("tag", help="Tag a conversation")
+    p_conv_tag.add_argument("conv_id", help="Conversation ID")
+    p_conv_tag.add_argument("--clear", action="store_true", help="Replace existing tags")
+    p_conv_tag.add_argument("tags", nargs="*", default=[], help="Tag(s) to add")
+
+    # conv delete <conv_id>
+    p_conv_del = p_conv_sub.add_parser("delete", help="Delete conversation from registry")
+    p_conv_del.add_argument("conv_id", help="Conversation ID")
+
+    # conv use <conv_id> --agent <name>
+    p_conv_use = p_conv_sub.add_parser("use", help="Set active conversation for an agent")
+    p_conv_use.add_argument("conv_id", help="Conversation ID")
+    p_conv_use.add_argument("--agent", "-a", dest="agent_name", required=True, help="Agent name")
+
     # deregister <name>
     p_dereg = sub.add_parser("deregister", help="Remove agent from registry")
     p_dereg.add_argument("name", help="Agent name")
@@ -938,6 +1163,23 @@ def main() -> int:
 
     if args.command == "deregister":
         return cmd_deregister(args.name)
+
+    if args.command == "conv":
+        sub = args.conv_cmd
+        if sub == "list":
+            return cmd_conv_list(getattr(args, "agent", None))
+        if sub == "show":
+            return cmd_conv_show(args.conv_id)
+        if sub == "rename":
+            return cmd_conv_rename(args.conv_id, args.title)
+        if sub == "tag":
+            return cmd_conv_tag(args.conv_id, args.tags, args.clear)
+        if sub == "delete":
+            return cmd_conv_delete(args.conv_id)
+        if sub == "use":
+            return cmd_conv_use(args.conv_id, args.agent_name)
+        print("[agentia] Unknown conv subcommand. Run: agentia conv --help")
+        return 1
 
     if args.command == "prune":
         return cmd_prune()
