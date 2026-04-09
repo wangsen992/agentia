@@ -338,7 +338,7 @@ setup/adapters/
 
 specs/
     005_relay_inbox.md        # Mesh architecture, discovery, response scenarios
-    006_orchestration.md      # Moderator pattern, autonomous coordination
+    006_orchestration_patterns.md      # Moderator pattern, autonomous coordination
     009_agentserver_api.md    # Full HTTP API reference
     010_cli_interface.md      # CLI reference
     012_multi_agent_mesh.md   # Peer-to-peer mesh design
