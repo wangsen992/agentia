@@ -92,6 +92,12 @@ class Session:
     _event_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _response_buffer: list = field(default_factory=list, repr=False)
     _response_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    # Fired once after spawn: pi sends initial state with actual sessionFile path
+    _init_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    # Set by event reader when pi reports its actual session file (from get_state response)
+    _actual_session_file: str = ""
+    # True while waiting for compaction_end after triggering auto-compact
+    _compact_pending: bool = field(default=False, repr=False)
     _idle_timer: Optional[threading.Timer] = field(default=None, repr=False)
 
 
@@ -286,6 +292,8 @@ class SessionManager:
         # Event reader thread
         session._response_buffer.clear()
         session._response_event.clear()
+        session._init_event.clear()
+        session._actual_session_file = ""
         session._event_thread = threading.Thread(
             target=self._read_events,
             name=f"pi-event-reader-{session.name}",
@@ -293,6 +301,24 @@ class SessionManager:
             args=(proc, session),
         )
         session._event_thread.start()
+
+        # pi does not send automatic startup events — we must explicitly request state.
+        # Send get_state to discover the actual sessionFile path pi is using.
+        # The event reader will capture the response and set _init_event.
+        try:
+            proc.stdin.write(json.dumps({"type": "get_state"}) + "\n")
+            proc.stdin.flush()
+        except BrokenPipeError:
+            pass  # pi already exited
+
+        # Wait for the get_state response (contains actual sessionFile)
+        init_ok = session._init_event.wait(timeout=5)
+        if init_ok and session._actual_session_file:
+            # pi reports the actual path
+            session.session_file = session._actual_session_file
+        else:
+            # Fallback: use name-based path
+            session.session_file = f"{session.name}.jsonl"
 
         self._upsert_manifest(session)
         return session
@@ -351,6 +377,32 @@ class SessionManager:
                             session._response_buffer.append(text)
 
                 elif etype == "agent_end":
+                    # Don't signal while a compaction triggered by this agent_end is pending.
+                    # The _compact_pending flag is set by send_message when it triggers
+                    # auto-compaction after agent_end fires.
+                    if not getattr(session, "_compact_pending", False):
+                        session._response_event.set()
+
+                elif etype == "response":
+                    # pi sends initial state after startup (get_state response).
+                    # Capture the actual sessionFile path so _spawn can record it.
+                    cmd = event.get("command", "")
+                    data = event.get("data", {})
+                    if cmd == "get_state" and data.get("sessionFile"):
+                        session._actual_session_file = data["sessionFile"]
+                        session._init_event.set()
+                    elif cmd == "compact":
+                        # Compact command acknowledged — will be followed by compaction_end
+                        pass
+
+                elif etype == "compaction_end":
+                    # Compaction finished — update context_pct and unblock any waiting sender.
+                    result = event.get("result", {})
+                    ctx = result.get("contextUsage", {})
+                    pct = ctx.get("percent") if ctx else None
+                    if pct is not None:
+                        session.context_pct = int(pct)
+                    session._compact_pending = False
                     session._response_event.set()
 
                 elif etype == "extension_ui_request":
@@ -502,8 +554,7 @@ class SessionManager:
         # LRU eviction if at max
         self._evict_lru()
 
-        # Spawn subprocess
-        s.session_file = f"{s.name}.jsonl"
+        # Spawn subprocess — _spawn captures the actual sessionFile path from pi
         self._spawn(s)
         self._reset_idle_timer(s)
 
@@ -542,8 +593,7 @@ class SessionManager:
         s = self._sessions[resolved_name]
         if s.status != "running":
             if s.status == "stopped":
-                s.session_file = f"{s.name}.jsonl"
-                self._spawn(s)
+                self._spawn(s)  # _spawn captures actual sessionFile from pi
             else:
                 return {"error": f"session in invalid state: {s.status}"}
 
@@ -558,8 +608,7 @@ class SessionManager:
         s._response_event.clear()
 
         if s._proc is None or s._proc.poll() is not None:
-            # Subprocess died — respawn
-            s.session_file = f"{s.name}.jsonl"
+            # Subprocess died — respawn (captures actual sessionFile from pi)
             self._spawn(s)
 
         cmd = {"type": "prompt", "message": content}
@@ -580,14 +629,29 @@ class SessionManager:
         response_text = "".join(s._response_buffer)
         s.message_count += 1
 
-        # Update context_pct
-        sf = self._session_dir / s.session_file
-        s.context_pct = estimate_context_pct(sf, self._model)
+        # Update context_pct — use value set by compaction_end if available,
+        # otherwise estimate from current session file
+        if s.context_pct == 0:
+            sf = self._session_dir / s.session_file
+            s.context_pct = estimate_context_pct(sf, self._model)
 
-        # Auto-compact if threshold reached
+        # Auto-compact if threshold reached.
+        # Set _compact_pending BEFORE waiting so that agent_end won't unblock us
+        # (agent_end fires before compaction_end; we need compaction_end to set _response_event).
         compact_triggered = False
         if s.context_pct >= self._context_threshold_pct:
             compact_triggered = self._compact_session(s)
+            if compact_triggered:
+                s._compact_pending = True
+                # Wait for compaction_end (sets _response_event) instead of returning immediately
+                timed_out = not s._response_event.wait(timeout=self._timeout)
+                if timed_out:
+                    s._compact_pending = False
+                    return {"response": response_text, "error": "compaction timeout",
+                            "message_count": s.message_count, "context_pct": s.context_pct,
+                            "compact_triggered": True, "timed_out": True}
+                s._compact_pending = False
+                # context_pct was updated by compaction_end event handler
 
         self._upsert_manifest(s)
         self._reset_idle_timer(s)
@@ -600,10 +664,13 @@ class SessionManager:
         }
 
     def _compact_session(self, session: Session) -> bool:
-        """Send compact command to a running session. Returns True if sent."""
+        """Send compact command to a running session. Caller sets _compact_pending.
+
+        Returns True if sent. Caller waits for compaction_end via _response_event."""
         if session._proc is None or session._proc.poll() is not None:
             return False
         try:
+            session._response_event.clear()
             session._proc.stdin.write(json.dumps({"type": "compact", "message": ""}) + "\n")
             session._proc.stdin.flush()
             return True
@@ -611,7 +678,7 @@ class SessionManager:
             return False
 
     def compact(self, name: str, message: str = "") -> dict:
-        """Manually trigger compaction on a session."""
+        """Manually trigger compaction on a session. Waits for compaction_end."""
         if not self._sessions:
             self._load_manifest()
         resolved = self._resolve_name(name)
@@ -622,15 +689,17 @@ class SessionManager:
             return {"error": f"session not running: {name}"}
 
         count_before = s.message_count
+        # _compact_session clears _response_event and sends compact command
         sent = self._compact_session(s)
         if not sent:
             return {"error": "failed to send compact command"}
 
-        # Wait briefly for compaction to process (pi responds after)
-        time.sleep(2)
-        sf = self._session_dir / s.session_file
-        s.context_pct = estimate_context_pct(sf, self._model)
+        # Wait for compaction_end (sets _response_event)
+        timed_out = not s._response_event.wait(timeout=60)
+        if timed_out:
+            return {"error": "compaction timeout", "message_count": s.message_count}
 
+        # context_pct was updated by compaction_end event handler
         self._upsert_manifest(s)
         return {"status": "compacted", "message_count_before": count_before,
                 "message_count_after": s.message_count, "context_pct": s.context_pct}

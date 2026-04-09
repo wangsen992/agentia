@@ -10,6 +10,7 @@ Commands: register, agents, send, status, configure, update, deregister, forward
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import time
