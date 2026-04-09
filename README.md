@@ -86,6 +86,61 @@ python3 cli/host.py agents
 
 ---
 
+## Deploying on a Remote VM (Bare Metal)
+
+No Docker required on the remote — just Python 3 and curl. The setup script handles everything.
+
+### On the remote machine (one-time setup):
+
+```bash
+# Download and run the setup script
+git clone https://github.com/your/agentia.git
+cd agentia
+chmod +x setup/setup-remote.sh
+
+# Run setup — answer the prompts
+export MINIMAX_API_KEY=your_key
+./setup/setup-remote.sh \
+    --name research-agent \
+    --provider minimax \
+    --model MiniMax-M2.7 \
+    --role-goal "You are a research assistant specializing in fluid dynamics."
+
+# Start AgentServer
+cd agentia
+export MINIMAX_API_KEY=your_key
+python3 cli/agent.py serve --config ~/.pi/agent/agent.json \
+    --provider minimax --model MiniMax-M2.7 --workspace ~/.pi/agent
+```
+
+The setup script:
+1. Checks prerequisites (Python 3.8+, curl)
+2. Installs pi-agent (binary + companion files)
+3. Creates the agent config at `~/.pi/agent/agent.json`
+4. Prints the AgentServer URL and registration command
+
+### On your Mac:
+
+```bash
+# Register the remote agent
+python3 cli/host.py register http://<vm-ip>:8080 --name research-agent
+
+# Use it like any other agent
+python3 cli/host.py send research-agent "What can you do?"
+```
+
+### If the VM has no public IP (SSH tunnel fallback):
+
+```bash
+# SSH tunnel: remote port 8080 → local 18080
+ssh -L 18080:localhost:8080 user@vm
+
+# On your Mac, AgentServer is now at localhost:18080
+python3 cli/host.py register http://localhost:18080 --name research-agent
+```
+
+---
+
 ## Managing Agents
 
 ```bash
@@ -333,8 +388,10 @@ agents/adapters/
     openclaw.py      # OpenClaw adapter (legacy)
     factory.py       # Adapter factory
 
-setup/adapters/
-    pi-agent/        # pi-agent setup templates, install script
+setup/
+    setup-remote.sh  # Bare-metal deployment script (no Docker)
+    adapters/
+        pi-agent/    # pi-agent install script, config template, bootstrap
 
 specs/
     005_relay_inbox.md        # Mesh architecture, discovery, response scenarios
