@@ -841,6 +841,249 @@ def cmd_conv_use(conv_id: str, agent_name: str) -> int:
     return 0
 
 
+# ─── Chat REPL (Phase 3) ───────────────────────────────────────────────────────
+
+_from_ptk_imported = False
+
+
+def cmd_chat(name: str, conv: str | None = None, new_conv: bool = False) -> int:
+    """Interactive REPL for chatting with an agent.
+
+    Uses prompt_toolkit for a proper TUI with:
+    - Colored prompt showing agent + conversation
+    - Up-arrow command history
+    - Slash commands: /switch, /new, /sessions, /compact, /status, /conv, /help, /quit
+    - Ctrl+C to interrupt
+    """
+    global _from_ptk_imported
+    if not _from_ptk_imported:
+        try:
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.history import FileHistory
+            from prompt_toolkit.styles import Style
+            from prompt_toolkit.shortcuts import clear
+            _from_ptk_imported = True
+        except ImportError:
+            print("[agentia] prompt_toolkit not installed. Run: pip install prompt_toolkit")
+            return 1
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.history import FileHistory
+    from prompt_toolkit.styles import Style
+    from prompt_toolkit.shortcuts import clear
+
+    # ── State ──────────────────────────────────────────────────────────────
+    current_agent_name = name
+    current_conv_id: str | None = conv
+    current_session_name: str | None = None
+
+    # ── Verify agent ───────────────────────────────────────────────────────
+    agent_info = _get_agent(name)
+    if not agent_info:
+        print(f"[agentia] Agent '{name}' not found.")
+        return 1
+
+    # ── Resolve initial conversation ──────────────────────────────────────
+    if new_conv:
+        current_conv_id = None
+    elif conv:
+        session_info = _http_post(name, "/sessions/new", {"name": conv}, timeout=10)
+        if session_info:
+            current_session_name = session_info.get("name", conv)
+        else:
+            print(f"[agentia] Failed to access conversation '{conv}'.")
+            return 1
+    else:
+        active = _get_active_conv(name)
+        if active:
+            current_conv_id = active["conv_id"]
+            current_session_name = active["session_name"]
+
+    # ── History file ───────────────────────────────────────────────────────
+    hist_dir = Path.home() / ".agentia" / "history"
+    hist_dir.mkdir(parents=True, exist_ok=True)
+    hist_file = hist_dir / f"{name}.hist"
+
+    # ── Style ──────────────────────────────────────────────────────────────
+    style = Style.from_dict({
+        "prompt": "ansigreen bold",
+        "sep": "ansiblue",
+        "error": "ansired bold",
+        "info": "ansiblue",
+    })
+
+    HELP_LINES = [
+        ("/switch <id>",  "Switch to a conversation"),
+        ("/new <title>",  "Start a new conversation"),
+        ("/sessions",     "List recent sessions for this agent"),
+        ("/compact",     "Trigger compaction on current session"),
+        ("/status",      "Show agent + session status"),
+        ("/conv",        "Show current conversation info"),
+        ("/clear",       "Clear the screen"),
+        ("/help",        "Show this help"),
+        ("/quit",        "Exit the REPL"),
+    ]
+
+    def make_prompt() -> str:
+        c = current_conv_id or "(new)"
+        return f"\n  Agent: {current_agent_name}  |  Conv: {c}\n  > "
+
+    def send_message(message: str):
+        """Send via smart router. Updates conversation state on success."""
+        nonlocal current_conv_id, current_session_name
+        response = _smart_route(name, message, None)
+        if not response:
+            print("[agentia] No response (agent may be unavailable).")
+            return False
+        resp_conv = response.get("conversation") or current_conv_id
+        resp_count = response.get("message_count", 0)
+        resp_ctx = response.get("context_pct", 0)
+        if resp_conv and resp_conv != current_conv_id:
+            current_conv_id = resp_conv
+        if current_conv_id:
+            _upsert_conv_from_send(
+                name, current_conv_id,
+                current_session_name or current_conv_id,
+                message_count=resp_count,
+                context_pct=resp_ctx,
+            )
+        content = response.get("response") or response.get("content") or ""
+        if content:
+            print(f"\n{content}\n")
+        return True
+
+    # ── Main loop ───────────────────────────────────────────────────────────
+    print(f"[agentia] Chatting with '{name}'. Type /help for commands.\n")
+    session = PromptSession(history=FileHistory(str(hist_file)))
+
+    while True:
+        try:
+            user_input = session.prompt(make_prompt(), style=style).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n[agentia] Exiting.")
+            break
+
+        if not user_input:
+            continue
+
+        # ── Slash commands ──────────────────────────────────────────────────
+        if user_input.startswith("/"):
+            parts = user_input.split(maxsplit=2)
+            cmd = parts[0]
+            arg1 = parts[1] if len(parts) > 1 else None
+
+            if cmd in ("/quit", "/exit"):
+                print("[agentia] Goodbye.")
+                break
+
+            if cmd == "/help":
+                print("\nCommands:")
+                for c, desc in HELP_LINES:
+                    print(f"  {c:<16} {desc}")
+                print()
+                continue
+
+            if cmd == "/clear":
+                clear()
+                continue
+
+            if cmd == "/status":
+                status = _http_get(name, "/status")
+                if status:
+                    print(f"  Agent:    {name}")
+                    print(f"  Ready:   {'yes' if status.get('ready') else 'no'}")
+                    print(f"  Model:   {status.get('model', '?')}")
+                    uptime = status.get("uptime", 0)
+                    print(f"  Uptime:  {uptime:.0f}s ({uptime/3600:.1f}h)")
+                    print(f"  Conv:    {current_conv_id or '(new)'}")
+                    print(f"  Session: {current_session_name or 'none'}")
+                else:
+                    print("[agentia] Could not reach agent.")
+                continue
+
+            if cmd == "/conv":
+                if current_conv_id:
+                    d = _load_conv(current_conv_id)
+                    print(f"  ID:       {current_conv_id}")
+                    print(f"  Title:    {d.get('title', '')}")
+                    print(f"  Session:  {current_session_name or 'none'}")
+                    print(f"  Messages: {d.get('message_count', 0)}")
+                    print(f"  Context: {d.get('context_pct', 0)}%")
+                    tags = d.get('tags', []) or []
+                    print(f"  Tags:     {', '.join(tags) if tags else '(none)'}")
+                else:
+                    print("  No active conversation.")
+                continue
+
+            if cmd == "/sessions":
+                sessions = _get_agent_sessions(name)
+                if not sessions:
+                    print("  No sessions.")
+                else:
+                    def _by_time(s): return s.get("last_active", "")
+                    for s in sorted(sessions, key=_by_time, reverse=True)[:10]:
+                        title = s.get("title") or s.get("name", "?")
+                        sts = s.get("status", "?")
+                        msgs = s.get("message_count", 0)
+                        last = s.get("last_active", "?")[:19]
+                        mark = " ←" if title == current_conv_id else ""
+                        print(f"  {title:<35} [{sts}] {msgs:>3} msgs  {last}{mark}")
+                continue
+
+            if cmd == "/switch":
+                if not arg1:
+                    print("[agentia] Usage: /switch <conversation-id>")
+                    continue
+                d = _load_conv(arg1)
+                if not d.get("agent_name"):
+                    print(f"[agentia] Conversation '{arg1}' not found.")
+                    continue
+                new_sess = d.get("session_name", arg1)
+                _set_active_conv(name, arg1, new_sess)
+                current_conv_id = arg1
+                current_session_name = new_sess
+                print(f"[agentia] Switched to '{arg1}'.")
+                continue
+
+            if cmd == "/new":
+                if not arg1:
+                    print("[agentia] Usage: /new <title>")
+                    continue
+                slug = _slugify_message(arg1)
+                si = _http_post(name, "/sessions/new", {"name": slug}, timeout=10)
+                if not si:
+                    print(f"[agentia] Failed to create conversation '{slug}'.")
+                    continue
+                actual = si.get("name", slug)
+                _set_active_conv(name, actual, actual)
+                _upsert_conv_from_send(name, slug, actual, message_count=0, context_pct=0)
+                current_conv_id = slug
+                current_session_name = actual
+                print(f"[agentia] New conversation: '{slug}'.")
+                continue
+
+            if cmd == "/compact":
+                if not current_session_name:
+                    print("[agentia] No active session.")
+                else:
+                    r = _http_post(name, f"/sessions/{current_session_name}/compact",
+                                   {"message": ""}, timeout=30)
+                    if r:
+                        print(f"[agentia] Compacted: "
+                              f"{r.get('message_count_before','?')} msgs → "
+                              f"{r.get('message_count_after','?')} msgs")
+                    else:
+                        print("[agentia] Compact failed.")
+                continue
+
+            print(f"[agentia] Unknown: {cmd}. Type /help.")
+            continue
+
+        # Regular message
+        send_message(user_input)
+
+    return 0
+
+
 # ─── Prune ────────────────────────────────────────────────────────────────────
 
 def cmd_prune() -> int:
@@ -1074,6 +1317,14 @@ def main() -> int:
     p_dereg = sub.add_parser("deregister", help="Remove agent from registry")
     p_dereg.add_argument("name", help="Agent name")
 
+    # chat <name> [--conv <conv>] [--new] — interactive REPL
+    p_chat = sub.add_parser("chat", help="Start an interactive REPL chat with an agent")
+    p_chat.add_argument("name", help="Agent name")
+    p_chat.add_argument("--conv", "-c", dest="conv", default=None,
+                        help="Start in a specific conversation")
+    p_chat.add_argument("--new", "-n", dest="new", action="store_true",
+                        help="Start a new conversation")
+
     # prune
     sub.add_parser("prune", help="Remove unreachable agents from registry")
 
@@ -1180,6 +1431,10 @@ def main() -> int:
             return cmd_conv_use(args.conv_id, args.agent_name)
         print("[agentia] Unknown conv subcommand. Run: agentia conv --help")
         return 1
+
+    if args.command == "chat":
+        return cmd_chat(args.name, conv=getattr(args, "conv", None),
+                        new_conv=getattr(args, "new", False))
 
     if args.command == "prune":
         return cmd_prune()
