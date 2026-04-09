@@ -1,5 +1,5 @@
 # SPEC 005: Relay & Inbox Architecture — 2026-04-07
-**Updated:** 2026-04-09
+**Updated:** 2026-04-09 (mesh model merged from SPEC 012)
 
 ## Goal
 
@@ -19,6 +19,8 @@ Real multi-agent systems need **async message passing**:
 - Agent A sends to Agent B → doesn't wait → continues working
 - Agent B finishes → sends result back to Agent A
 - Agent A picks it up when ready
+
+The second insight: `host.py` is not just a host-side tool for the human. It is also a **first-class tool available to agents** running on remote machines. An agent can decide on its own to reach out to another agent — not just when the human tells it to.
 
 ---
 
@@ -122,40 +124,6 @@ mesh.json                # central mesh config: all agents and their URLs (share
 
 ---
 
-## Current File Structure
-
-```
-relay/
-├── __init__.py          ← (deprecated, HostContainerBackend removed 2026-04-09)
-├── base.py              ← (deprecated, no longer needed)
-└── backends/
-    ├── base.py          ← (deprecated)
-    ├── docker.py        ← (deprecated)
-    └── ssh.py           ← (deprecated)
-
-agent_side/
-├── server.py            ← AgentServer HTTP server
-├── config.py            ← ConfigManager
-├── harness.py           ← Internal harness
-└── patterns/
-    ├── inbox.py         ← File-based inbox delivery
-    └── sync.py          ← Direct subprocess delivery
-
-agents/adapters/         ← AgentAdapter implementations
-├── __init__.py
-├── base.py
-├── factory.py
-└── pi_agent.py         ← pi-agent adapter
-
-cli/
-├── agent.py             ← agent-side CLI (runs AgentServer)
-└── host.py              ← host-side CLI + available to agents as tool
-```
-
-> **Note:** The `relay/` directory and its backends are deprecated as of 2026-04-09. All transport is now pure HTTP API. The directory remains for reference until cleaned up.
-
----
-
 ## Discovery: mesh.json
 
 Each agent pulls from `mesh.json` to discover peers. The file lives in a shared, writable location accessible to all agents.
@@ -189,9 +157,58 @@ The admin machine isn't architecturally special — it's just whichever machine 
 
 ---
 
+## Capability Model
+
+Each agent has a **capability grant** defining what it can do when using `host.py` to reach other agents. Grants are enforced through the agent's system prompt and `peers.json`:
+
+```json
+{
+  "mesh": {
+    "agents": {
+      "research-agent": "http://vm-research.example.com:8080",
+      "coding-agent": "http://vm-coding.example.com:8080"
+    }
+  }
+}
+```
+
+**V1 (minimal):** Each agent has a `peers.json` listing known peers. The system prompt tells it which peer to use for which task. No technical enforcement — trust the system prompt and explicit configuration.
+
+**Future:** `host.py` could validate target URLs against a `peers.json` whitelist before sending.
+
+---
+
+## What This Is NOT
+
+- **NOT a new layer** — `host.py` already existed; we're clarifying it runs on agent machines too
+- **NOT a hub-and-spoke** — no central broker; all nodes are symmetric
+- **NOT a shared filesystem** — agents communicate via messages, not shared files
+- **NOT automatic discovery** — peers are registered explicitly in `mesh.json`
+
+---
+
+## Relation to Other Specs
+
+- **SPEC 006 (Orchestration Patterns):** The moderator pattern still works. The mesh enables autonomous patterns — an agent can act as moderator for sub-agents using the same `host.py` mechanism. No spec changes needed.
+- **SPEC 009 (AgentServer API):** Transport-agnostic. Whether a request comes from a human's Mac or another agent's machine is irrelevant to AgentServer.
+- **SPEC 010 (CLI Interface):** `peers.json` is the local copy of `mesh.json`, separate from `agents.json` (host-side registry). The agent doesn't need to know about every agent the human has registered — only its own peers.
+- **SPEC 020/021:** Session and conversation layers are unaffected by the mesh topology.
+
+---
+
+## Next Steps
+
+1. **Implement `peers.json` pull:** On boot and periodically, `agent.py` pulls `mesh.json` and updates `peers.json`
+2. **Expose `host.py` to agents:** Ensure the agent's prompt/skill instructions tell it how to use `host.py send` to reach peers
+3. **V1 capability grants:** Seed each remote machine's `peers.json` from the host's `agents.json`
+4. **SSH tunnel fallback:** Document the `-L` tunnel approach for VMs with no public IP
+
+---
+
 ## Open Questions
 
 1. ~~**HostContainerBackend**~~ — resolved: removed, HTTP-to-HTTP is the only transport
 2. ~~**Discovery**~~ — resolved: `mesh.json` + local `peers.json` with periodic pull
 3. **Scenario 1 vs 2** — V1 uses Scenario 1 (polling). Scenario 2 (proactive delivery) deferred until a machine needs a publicly reachable HTTP endpoint
 4. **Moderator role** — can an agent act as moderator for sub-agents? Uses same mesh communication; no spec changes needed
+5. **Capability enforcement** — V1 trusts system prompt. Future: URL whitelist in `host.py`?
