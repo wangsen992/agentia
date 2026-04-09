@@ -1,23 +1,45 @@
-# Agentia — Federated Multi-Agent Organization System
+# Agentia — Federated Multi-Agent System
 
-**Mission:** Deploy AI agents as containers, managed from a host relay. Agents communicate asynchronously, expose HTTP APIs, and can be spawned, queried, and pruned from the host.
+**Mission:** Deploy AI agents on any machine, manage them from anywhere. Agents communicate over HTTP — no shared filesystem, no custom protocol, no central hub.
+
+---
+
+## What Is This?
+
+Agentia is a lightweight framework for running multiple AI agents across different machines, with each agent running as an independent HTTP server. You communicate with agents using a simple CLI — from your Mac, from another agent, from a script.
+
+**The key idea:** every machine runs the same two things:
+- **`agent.py`** — the server, exposing an HTTP API
+- **`host.py`** — the client, available as a CLI tool and to other agents
+
+Any agent can talk to any other agent by HTTP. No hub, no central server.
 
 ---
 
 ## Architecture
 
 ```
-Host (your machine)                     Agent (Docker container)
-─────────────────                      ───────────────────────
-python3 cli/host.py                      agentia-agent serve
-  └─ HTTP API ─────────────────────────►  agent_side/server.py
-                                             └─ SessionManager (multi-session)
-                                                   └─ Harness
-                                                         └─ PiAgentAdapter
-                                                               └─ pi-agent subprocess
+Machine A (your Mac)                    Machine B (cloud VM)
+────────────────────                  ─────────────────────
+python3 cli/host.py                    python3 cli/agent.py
+  └─ send, status, files...             └─ AgentServer :8080
+         │                                      │
+         └────── HTTP POST /sessions/... ◄──────┘
+                    message + response
 ```
 
-**Two CLIs:** `cli/host.py` (host side, on your machine) and `cli/agent.py` (agent side, runs in the container). They communicate over HTTP — the host CLI works identically whether the agent is in Docker, SSH, or bare metal.
+```
+Machine A (Agent A)                    Machine B (Agent B)
+────────────────────                  ─────────────────────
+python3 cli/agent.py                     python3 cli/agent.py
+  └─ AgentServer :8080                   └─ AgentServer :8080
+
+Agent A's host.py ──── HTTP ──── Agent B's AgentServer
+```
+
+**Two CLIs:**
+- **`python cli/agent.py`** — runs on each agent machine, starts the HTTP server
+- **`python cli/host.py`** — runs anywhere, sends messages to any agent by URL
 
 ---
 
@@ -26,18 +48,18 @@ python3 cli/host.py                      agentia-agent serve
 ### 1. Build the image
 
 ```bash
+cd agentia
 docker build -t agentia .
 ```
 
 ### 2. Start an agent container
 
 ```bash
-# pi-agent natural design: mount host workspace to ~/.pi/agent/ inside container
 docker run -d --name my-agent -p 18080:8080 \
     -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
     -e PI_DIR=/root/.pi/agent \
-    -v ~/.agentia/agents/my-research-agent:/root/.pi/agent \
-    agentia serve \
+    -v ~/.agentia/agents/my-agent:/root/.pi/agent \
+    python cli/agent.py serve \
       --install pi-agent \
       --config /root/.pi/agent/agent.json \
       --provider minimax \
@@ -45,14 +67,14 @@ docker run -d --name my-agent -p 18080:8080 \
       --workspace /root/.pi/agent
 ```
 
-> All agent state — config, bootstrap files, skills, sessions — lives in `~/.agentia/agents/<name>/` on the host. pi-agent uses its natural layout (`~/.pi/agent/`) inside the container. Snapshot: `cp -r ~/.agentia/agents/my-research-agent/`.
+> All agent state — config, sessions, workspace — lives in `~/.agentia/agents/<name>/` on the host. The container is stateless.
 
-### 3. Manage from host
+### 3. Send a message
 
 ```bash
 export PYTHONPATH=$PWD
 
-# Register the agent
+# Register the agent (first time only)
 python3 cli/host.py register http://localhost:18080 --name my-agent
 
 # Send a message
@@ -64,70 +86,128 @@ python3 cli/host.py agents
 
 ---
 
-## Session Management
+## Managing Agents
 
-Each conversation with an agent is a **named session** — a persistent pi subprocess with its own session file. Sessions survive agent restarts.
+```bash
+# Register an agent by URL
+python3 cli/host.py register http://vm.example.com:8080 --name research-agent
+
+# List all registered agents
+python3 cli/host.py agents
+
+# Check agent health
+python3 cli/host.py status my-agent
+
+# Update agent configuration (live)
+python3 cli/host.py configure my-agent delivery sync
+python3 cli/host.py configure my-agent role.goal "You specialize in turbulence modeling."
+
+# Remove from registry
+python3 cli/host.py deregister my-agent
+
+# Prune unreachable agents (cleans up stale registry entries)
+python3 cli/host.py prune
+```
+
+---
+
+## Conversations and Sessions
+
+Each conversation maps to a **named session** — a persistent subprocess with its own session file.
 
 ```bash
 # Send to a named conversation (creates or resumes)
 python3 cli/host.py send my-agent "Plan my Hawaii trip" --conv hawaii
 
-# Send to a second conversation
-python3 cli/host.py send my-agent "Tell me about CFD" --conv crocus
+# Send without --conv: uses last active conversation (smart routing)
+python3 cli/host.py send my-agent "Update the research notes"
 
-# List all sessions for an agent
+# Start a new conversation (name derived from first message)
+python3 cli/host.py send my-agent "Let's start something new" --new
+
+# List all conversations
+python3 cli/host.py conv list my-agent
+
+# Show conversation details
+python3 cli/host.py conv show my-agent hawaii
+
+# Switch active conversation
+python3 cli/host.py conv use my-agent crocus
+
+# Tag a conversation
+python3 cli/host.py conv tag my-agent hawaii --tag travel
+
+# Delete a conversation
+python3 cli/host.py conv delete my-agent hawaii
+
+# List agent sessions
 python3 cli/host.py sessions my-agent
 
-# Manually compact a session
+# Manually compact a session (reduces context window)
 python3 cli/host.py compact my-agent --conv hawaii
 
-# Delete a session (stops subprocess, keeps session file)
+# Delete a session
 python3 cli/host.py session delete my-agent hawaii
-
-# Delete a session + session file
-python3 cli/host.py session delete my-agent hawaii --hard
+python3 cli/host.py session delete my-agent hawaii --hard  # also deletes session file
 ```
 
 ### Session behavior
 
-- **Auto-resume**: sending to an existing session name reconnects to its session file
-- **Idle timeout**: subprocesses auto-stop after `session_idle_ttl` seconds (default: 30 min). Session file is preserved.
-- **LRU eviction**: when `max_sessions` limit is hit, oldest running session is stopped to make room
-- **Auto-compact**: when context window reaches `context_threshold_pct` (default: 75%), pi auto-compacts before the next response
+| Feature | Behavior |
+|---|---|
+| **Auto-resume** | Sending to an existing session name reconnects to the same subprocess |
+| **Idle timeout** | Subprocess auto-stops after idle TTL (default: 30 min). Session file preserved. |
+| **LRU eviction** | At `max_sessions` limit, oldest running session is stopped to make room |
+| **Auto-compact** | When context reaches `context_threshold_pct` (default: 75%), pi compacts before responding |
 
 ### Session lifecycle flags
 
-| Flag | Default | What it controls |
-|------|---------|------------------|
-| `--session-ttl` | `1800` (30 min) | Idle timeout before subprocess auto-stops |
-| `--max-sessions` | `10` | Max concurrent running subprocesses |
-| `--context-threshold` | `75` | Context % to trigger auto-compact |
+```bash
+python cli/agent.py serve \
+    --session-ttl 300 \          # Idle timeout: 5 min (default: 1800 = 30 min)
+    --max-sessions 5 \           # Max concurrent sessions (default: 10)
+    --context-threshold 80        # Compact at 80% context (default: 75)
+```
+
+---
+
+## Interactive REPL
 
 ```bash
-docker run ... agentia serve \
-    --session-ttl 300 \          # Override: stop after 5 min idle
-    --max-sessions 5 \           # Override: max 5 concurrent sessions
-    --context-threshold 80        # Override: compact at 80% context
+# Chat with an agent interactively
+python3 cli/host.py chat my-agent
+
+# Start in a specific conversation
+python3 cli/host.py chat my-agent --conv hawaii
+
+# Start a new conversation
+python3 cli/host.py chat my-agent --new
 ```
+
+Inside the REPL:
+- Type messages to send to the agent
+- `/new` — start a new conversation
+- `/conv <name>` — switch to an existing conversation
+- `/sessions` — list sessions
+- `/quit` — exit
 
 ---
 
 ## Files API
 
-Manage files in the agent's workspace over HTTP:
+Manage files in an agent's workspace over HTTP:
 
 ```bash
 python3 cli/host.py files my-agent ls
 python3 cli/host.py files my-agent get memory/2026-04-08.md
-python3 cli/host.py files my-agent put memory/2026-04-08.md --from /tmp/mem.md
 python3 cli/host.py files my-agent put notes.md -c "Hello world"
-python3 cli/host.py files my-agent edit memory/2026-04-08.md   # Opens in $EDITOR, uploads on save
+python3 cli/host.py files my-agent edit memory/2026-04-08.md   # Opens in $EDITOR
 python3 cli/host.py files my-agent delete tmp/cache.txt
 ```
 
 ---
 
-## Snapshot
+## Workspace Snapshot
 
 ```bash
 # Snapshot an agent's workspace to a .tar.gz archive
@@ -138,51 +218,44 @@ python3 cli/host.py snapshot my-agent
 # Clone:   cp -r ~/.agentia/<name-A>/ ~/.agentia/<name-B>/
 ```
 
-Snapshot and Files API work over HTTP — no special access needed beyond the AgentServer endpoint.
-
 ---
 
 ## AgentServer HTTP API
 
-### Core
+### Core endpoints
 
-| Method | Endpoint | What it does |
-|--------|----------|--------------|
-| GET | `/status` | Agent health, adapter, provider, model, uptime |
-| GET | `/metrics` | Prometheus-compatible metrics (uptime, request counts, errors) |
-| GET | `/config` | Get current config |
-| PATCH | `/config` | Update config (`_restart: true` restarts subprocess) |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/status` | Health, adapter, provider, model, uptime |
+| GET | `/config` | Current config |
+| PATCH | `/config` | Update config |
 | PUT | `/config` | Replace entire config |
-| POST | `/message` | Send message (legacy single-session, blocks for response) |
-| POST | `/message/async` | Queue message; return correlation ID |
-| GET | `/response/{id}` | Poll for async response |
 | POST | `/restart` | Restart agent subprocess |
-| GET | `/inbox` | List queued inbox messages |
-| GET | `/inbox/{id}` | Get specific inbox message |
 
-### Files
+### Sessions endpoints
 
-| Method | Endpoint | What it does |
-|--------|----------|--------------|
-| GET | `/files/` | List workspace directory |
-| GET | `/files/<path>` | Read workspace file |
-| PUT | `/files/<path>` | Write workspace file |
-| DELETE | `/files/<path>` | Delete file or directory |
-
-### Sessions
-
-| Method | Endpoint | What it does |
-|--------|----------|--------------|
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/sessions` | List all sessions |
 | GET | `/sessions/<name>` | Get session details |
 | POST | `/sessions/new` | Create or resume a named session |
-| POST | `/sessions/<name>/message` | Send message to a session |
-| POST | `/sessions/<name>/compact` | Trigger manual compaction |
-| DELETE | `/sessions/<name>` | Stop subprocess (session file kept) |
+| POST | `/sessions/<name>/message` | Send message, get response |
+| POST | `/sessions/<name>/compact` | Trigger compaction |
+| DELETE | `/sessions/<name>` | Stop subprocess, keep session file |
 | DELETE | `/sessions/<name>?hard=true` | Stop and delete session file |
 
-### `GET /status` response
+### Files endpoints
 
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/files/` | List workspace directory |
+| GET | `/files/<path>` | Read file |
+| PUT | `/files/<path>` | Write file |
+| DELETE | `/files/<path>` | Delete file or directory |
+
+### Example responses
+
+**GET /status:**
 ```json
 {
   "agent_id": "agent-001",
@@ -196,8 +269,7 @@ Snapshot and Files API work over HTTP — no special access needed beyond the Ag
 }
 ```
 
-### `GET /sessions` response
-
+**GET /sessions:**
 ```json
 [
   {"name": "2026-04-09T00-22-30_hawaii", "title": "hawaii", "status": "running", "message_count": 12, "context_pct": 23, "last_active": "2026-04-09T03:00:00Z"},
@@ -207,83 +279,37 @@ Snapshot and Files API work over HTTP — no special access needed beyond the Ag
 
 ---
 
-## Two CLIs
+## Multi-Agent Mesh
 
-### `cli/agent.py` — agent-side (runs in container)
+Each machine is a **symmetric node** — both a server (receives messages) and a client (sends messages to other agents). Any agent can reach any other agent directly by HTTP.
 
-```bash
-# One-shot: install runtime + start AgentServer
-agentia-agent serve \
-    --install pi-agent \
-    --config /root/.pi/agent/agent.json \
-    --provider minimax \
-    --model MiniMax-M2.7 \
-    --workspace /root/.pi/agent \
-    --session-ttl 300 \
-    --max-sessions 5 \
-    --context-threshold 80
+```
+Machine A                              Machine B
+────────────                          ────────────
+python cli/agent.py :8080              python cli/agent.py :8080
+python cli/host.py (client)            python cli/host.py (client)
 
-# Or two-step
-agentia-agent setup pi-agent --config /root/.pi/agent/agent.json ...
-agentia-agent serve --config /root/.pi/agent/agent.json
+Agent A ────── host.py send ──────► Agent B
+             HTTP POST
 ```
 
-### `cli/host.py` — host-side (runs on your machine)
-
-```bash
-# Register and manage
-python3 cli/host.py register <url> --name <name>
-python3 cli/host.py agents
-python3 cli/host.py status <name>
-python3 cli/host.py configure <name> delivery sync
-python3 cli/host.py update <name> --role-goal "You specialize in turbulence."
-python3 cli/host.py deregister <name>
-python3 cli/host.py prune              # Remove unreachable agents from registry
-
-# Messaging
-python3 cli/host.py send <name> <message> [--conv <session-name>]
-
-# Sessions
-python3 cli/host.py sessions <name>                    # List sessions
-python3 cli/host.py compact <name> --conv <session>  # Trigger compaction
-python3 cli/host.py session delete <name> <session> [--hard]
-
-# Files
-python3 cli/host.py files <name> ls [path]
-python3 cli/host.py files <name> get <path>
-python3 cli/host.py files <name> put <path> -c "..." | --from <file>
-python3 cli/host.py files <name> edit <path>
-python3 cli/host.py files <name> delete <path>
-
-# Workspace snapshot
-python3 cli/host.py snapshot <name> [out.tar.gz]
-
-# Raw HTTP passthrough
-python3 cli/host.py forward <name> GET /status
-```
-
----
-
-## Registry
-
-Host registry: `~/.agentia/agents.json`
+**How agents find each other:** `mesh.json` — a shared config file listing all agents and their URLs. Each agent pulls `mesh.json` on boot and periodically to update its local `peers.json`.
 
 ```json
 {
-  "version": 1,
-  "agents": {
-    "my-agent": {
-      "url": "http://localhost:18080",
-      "name": "my-agent",
-      "registered_at": "2026-04-09T...",
-      "last_seen_at": "2026-04-09T...",
-      "metadata": {}
+  "mesh": {
+    "agents": {
+      "research-agent": "http://vm-research.example.com:8080",
+      "coding-agent": "http://192.168.1.50:8080"
     }
   }
 }
 ```
 
-The registry maps friendly names to URLs. Operations like `send`, `status`, `sessions` all work by name lookup. Use `forward` for direct URL access without registration.
+- `mesh.json` can live in git, on a shared NFS volume, or any HTTP server
+- No central server required — it's just a file
+- Any machine with access can update it
+- Agents update their local `peers.json` from `mesh.json` on boot and periodically
 
 ---
 
@@ -291,52 +317,57 @@ The registry maps friendly names to URLs. Operations like `send`, `status`, `ses
 
 ```
 cli/
-    agent.py          # Agent-side CLI (agentia-agent, runs in container)
-    host.py           # Host-side CLI (python3 cli/host.py, runs on host)
+    agent.py         # Agent-side CLI: setup + serve (runs in container/on agent machine)
+    host.py          # Host-side CLI: send, manage, files, chat (runs anywhere)
 
 agent_side/
-    server.py         # AgentServer HTTP API (multi-session)
-    harness.py        # Spawns and manages agent subprocess
-    config.py         # AgentServerConfig + ConfigManager
+    server.py        # AgentServer HTTP API
+    harness.py       # Spawns and manages agent subprocess
+    config.py        # AgentServerConfig + ConfigManager
     patterns/
-        inbox.py      # Inbox delivery pattern
-        sync.py       # Sync delivery pattern
+        inbox.py     # Inbox delivery pattern
+        sync.py      # Sync delivery pattern
 
 agents/adapters/
-    pi_agent.py       # pi-agent adapter + SessionManager
-    openclaw.py       # OpenClaw adapter (legacy)
-    factory.py        # get_adapter()
+    pi_agent.py      # pi-agent adapter + SessionManager
+    openclaw.py      # OpenClaw adapter (legacy)
+    factory.py       # Adapter factory
 
-setup/adapters/       # Per-adapter setup templates
-    pi-agent/
-        install.sh
-        config.tmpl
-        bootstrap/
+setup/adapters/
+    pi-agent/        # pi-agent setup templates, install script
 
 specs/
-    010_cli_interface.md
-    020_session_management.md
+    005_relay_inbox.md        # Mesh architecture, discovery, response scenarios
+    006_orchestration.md      # Moderator pattern, autonomous coordination
+    009_agentserver_api.md    # Full HTTP API reference
+    010_cli_interface.md      # CLI reference
+    012_multi_agent_mesh.md   # Peer-to-peer mesh design
+    020_session_management.md  # Session lifecycle, LRU, idle TTL
+    021_conversation_mgmt.md  # Layer A: conversation registry
 
-README.md
+relay/                   # Deprecated (HostContainerBackend removed 2026-04-09)
 ```
 
 ---
 
 ## Design Decisions
 
-**HTTP between host and agent** — AgentServer is a simple HTTP server inside the container. No custom binary protocol, no shared filesystem required. Works identically for Docker, SSH, or bare metal.
+**Pure HTTP transport** — No SSH tunnels, no docker exec, no custom binary protocol. Any two machines with network reachability can communicate. Works identically for Docker, SSH, or bare metal.
 
-**Session management is server-owned (Option A)** — AgentServer owns session state: the manifest, subprocesses, idle timers, LRU eviction. The host CLI is a dumb client that calls the API. This mirrors how OpenClaw manages Jarvis's sessions.
+**Symmetric nodes** — Every machine runs both `agent.py` (server) and `host.py` (client). The MacBook you work from is just one node in the mesh.
 
-**Workspace lives on the host** — `~/.agentia/agents/<name>/` is bind-mounted into the container at `~/.pi/agent/` (pi-agent's natural home). The host has full access to all agent state. Snapshot: `cp -r ~/.agentia/agents/<name>/`.
+**Session state lives on the agent machine** — `~/.agentia/agents/<name>/` is the agent's home. The host has access via the Files API and snapshot. No shared filesystem required.
 
-**pi-agent for agent runtime** — `pi --mode rpc` gives us a robust JSONL stdin/stdout protocol, session files, built-in compaction, and tool execution. The `AGENTS.md` system prompt is injected via `--append-system-prompt`.
+**pi-agent for runtime** — `pi --mode rpc` gives a JSONL stdin/stdout protocol, session files, built-in compaction, and tool execution.
 
-**Configurable idle/session limits** — `session_idle_ttl`, `max_sessions`, and `context_threshold_pct` let you tune resource usage per deployment.
+**mesh.json for discovery** — Static config file in a shared location (git, NFS, HTTP). No auto-discovery, no central registry service. Simple and auditable.
 
 ---
 
 ## References
 
+- [SPEC 005 — Relay & Inbox Architecture](./specs/005_relay_inbox.md)
+- [SPEC 012 — Multi-Agent Mesh](./specs/012_multi_agent_mesh.md)
 - [SPEC 020 — Session Management](./specs/020_session_management.md)
-- [pi-agent RPC protocol](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/rpc.md)
+- [SPEC 021 — Conversation Management](./specs/021_conversation_management.md)
+- [pi-agent RPC protocol](https://github.com/badlogic/pi-mono/blob/main/docs/rpc.md)
