@@ -95,11 +95,17 @@ python3 cli/host.py session delete my-agent hawaii --hard
 
 ### Session lifecycle flags
 
+| Flag | Default | What it controls |
+|------|---------|------------------|
+| `--session-ttl` | `1800` (30 min) | Idle timeout before subprocess auto-stops |
+| `--max-sessions` | `10` | Max concurrent running subprocesses |
+| `--context-threshold` | `75` | Context % to trigger auto-compact |
+
 ```bash
 docker run ... agentia serve \
-    --session-ttl 300 \          # Idle timeout in seconds
-    --max-sessions 5 \           # Max concurrent running sessions
-    --context-threshold 80        # Context % to trigger auto-compact
+    --session-ttl 300 \          # Override: stop after 5 min idle
+    --max-sessions 5 \           # Override: max 5 concurrent sessions
+    --context-threshold 80        # Override: compact at 80% context
 ```
 
 ---
@@ -141,6 +147,7 @@ Snapshot and Files API work over HTTP — no special access needed beyond the Ag
 | Method | Endpoint | What it does |
 |--------|----------|--------------|
 | GET | `/status` | Agent health, adapter, provider, model, uptime |
+| GET | `/metrics` | Prometheus-compatible metrics (uptime, request counts, errors) |
 | GET | `/config` | Get current config |
 | PATCH | `/config` | Update config (`_restart: true` restarts subprocess) |
 | PUT | `/config` | Replace entire config |
@@ -148,6 +155,8 @@ Snapshot and Files API work over HTTP — no special access needed beyond the Ag
 | POST | `/message/async` | Queue message; return correlation ID |
 | GET | `/response/{id}` | Poll for async response |
 | POST | `/restart` | Restart agent subprocess |
+| GET | `/inbox` | List queued inbox messages |
+| GET | `/inbox/{id}` | Get specific inbox message |
 
 ### Files
 
