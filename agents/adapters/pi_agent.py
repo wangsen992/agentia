@@ -317,8 +317,20 @@ class SessionManager:
             # pi reports the actual path
             session.session_file = session._actual_session_file
         else:
-            # Fallback: use name-based path
-            session.session_file = f"{session.name}.jsonl"
+            # get_state timed out — find the actual session file ourselves.
+            # pi is the only writer, so the most recently modified .jsonl in the
+            # session dir is the one we just created or resumed.
+            session_files = sorted(
+                self._session_dir.glob("*.jsonl"),
+                key=lambda p: p.stat().st_mtime, reverse=True
+            )
+            # Filter out manifest.jsonl
+            session_files = [p for p in session_files if p.name != "manifest.jsonl"]
+            if session_files:
+                session.session_file = str(session_files[0])
+            else:
+                # Truly no file found — use name-based as last resort
+                session.session_file = f"{session.name}.jsonl"
 
         self._upsert_manifest(session)
         return session
