@@ -302,6 +302,69 @@ def cmd_files(name: str, subcmd: str, path: str, content: str | None) -> int:
             print(f"[agentia] HTTP {e.code}: {e.reason}")
             return 1
 
+    if subcmd == "edit":
+        import tempfile
+        import os
+        import subprocess
+
+        # Determine editor
+        editor = os.environ.get("EDITOR")
+        if not editor:
+            for candidate in ["code --wait", "nano", "vim", "vi"]:
+                result = subprocess.run(f"which {candidate.split()[0]}", shell=True, capture_output=True)
+                if result.returncode == 0:
+                    editor = candidate
+                    break
+        if not editor:
+            print("[agentia] No editor found. Set $EDITOR or install nano/vim")
+            return 1
+
+        # GET file
+        try:
+            req = Request(url)
+            with urlopen(req, timeout=10) as resp:
+                original = resp.read()
+        except HTTPError as e:
+            print(f"[agentia] HTTP {e.code}: {e.reason}")
+            return 1
+
+        # Write to temp file
+        suffix = os.path.splitext(file_path)[1]
+        fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+        try:
+            os.write(fd, original)
+            os.close(fd)
+        except:
+            os.close(fd)
+            raise
+
+        print(f"[agentia] Opening in {editor.split()[0]}... (save & close to upload changes)")
+
+        # Open in editor and wait
+        result = subprocess.run(editor.split() + [tmp_path])
+        if result.returncode != 0:
+            print(f"[agentia] Editor exited with code {result.returncode}")
+            os.unlink(tmp_path)
+            return 1
+
+        # Read edited content
+        edited = open(tmp_path, "rb").read()
+        os.unlink(tmp_path)
+
+        if edited == original:
+            print("[agentia] No changes, skipping upload")
+            return 0
+
+        # PUT back
+        try:
+            req = Request(url, data=edited, headers={"Content-Type": "application/octet-stream"}, method="PUT")
+            with urlopen(req, timeout=10) as resp:
+                print(f"[agentia] Updated: {file_path}")
+            return 0
+        except HTTPError as e:
+            print(f"[agentia] HTTP {e.code}: {e.reason}")
+            return 1
+
     print(f"[agentia] Unknown subcommand: {subcmd}")
     return 1
 
@@ -515,7 +578,7 @@ def main() -> int:
     # files <name> <subcmd> <path>
     p_files = sub.add_parser("files", help="Access agent workspace files")
     p_files.add_argument("name", help="Agent name")
-    p_files.add_argument("subcmd", choices=["get", "put", "delete", "ls"], help="Subcommand")
+    p_files.add_argument("subcmd", choices=["get", "put", "delete", "ls", "edit"], help="Subcommand")
     p_files.add_argument("path", help="Path relative to workspace (e.g. AGENTS.md, .pi/skills/)")
     p_files.add_argument("--content", "-c", default=None, help="File content for 'put'")
     p_files.add_argument("--from", dest="from_file", default=None, help="Read content from file")
