@@ -108,6 +108,7 @@ class PiAgentAdapter(AgentAdapter):
             self._model,
             "--session-dir",
             str(session_dir),
+            "--continue",  # Resume most recent session instead of starting fresh
         ]
 
         # Load AGENTS.md and pass as appended system prompt
