@@ -88,6 +88,9 @@ def cmd_serve(
     backstory: str,
     skills: list[str],
     var_overrides: dict,
+    session_ttl: int = 1800,
+    max_sessions: int = 10,
+    context_threshold: int = 75,
 ) -> int:
     """
     Start AgentServer HTTP API.
@@ -114,10 +117,13 @@ def cmd_serve(
             return result
 
     print(f"[agentia-agent] Starting AgentServer with config: {config_path}")
-    os.execvp(
-        "python3",
-        ["python3", "/agent/agent_side/server.py"],
-    )
+    cmd = [
+        "python3", "/agent/agent_side/server.py",
+        "--session-ttl", str(session_ttl),
+        "--max-sessions", str(max_sessions),
+        "--context-threshold", str(context_threshold),
+    ]
+    os.execvp("python3", cmd)
 
 
 # ─── Template rendering (shared) ───────────────────────────────────────────────
@@ -232,6 +238,12 @@ def main() -> int:
     p_serve.add_argument("--skills", action="append", default=[], help="Skill name")
     p_serve.add_argument("--var", action="append", default=[], dest="vars",
                          help="key=value template variable override")
+    p_serve.add_argument("--session-ttl", type=int, default=1800,
+                         help="Session idle TTL in seconds (default: 1800)")
+    p_serve.add_argument("--max-sessions", type=int, default=10,
+                         help="Max concurrent running sessions (default: 10)")
+    p_serve.add_argument("--context-threshold", type=int, default=75,
+                         help="Context %% threshold for auto-compact (default: 75)")
 
     args = parser.parse_args()
 
@@ -281,6 +293,9 @@ def main() -> int:
             backstory=args.backstory,
             skills=args.skills or [],
             var_overrides=var_overrides,
+            session_ttl=args.session_ttl,
+            max_sessions=args.max_sessions,
+            context_threshold=args.context_threshold,
         )
 
 

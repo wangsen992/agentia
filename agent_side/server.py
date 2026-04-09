@@ -503,6 +503,12 @@ def main():
     parser.add_argument("--provider", help="LLM provider (overrides config)")
     parser.add_argument("--model", help="LLM model (overrides config)")
     parser.add_argument("--workspace", help="Agent workspace path (overrides config)")
+    parser.add_argument("--session-ttl", type=int, default=None,
+                        help="Session idle TTL in seconds (overrides config)")
+    parser.add_argument("--max-sessions", type=int, default=None,
+                        help="Max concurrent running sessions (overrides config)")
+    parser.add_argument("--context-threshold", type=int, default=None,
+                        help="Context %% threshold for auto-compact (overrides config)")
     args = parser.parse_args()
 
     server = AgentServer(
@@ -522,6 +528,12 @@ def main():
         server.config.adapter_model = args.model
     if args.workspace is not None:
         server.config.adapter_workspace = args.workspace
+    if args.session_ttl is not None:
+        server.config.session_idle_ttl = args.session_ttl
+    if args.max_sessions is not None:
+        server.config.max_sessions = args.max_sessions
+    if args.context_threshold is not None:
+        server.config.context_threshold_pct = args.context_threshold
 
     print(
         f"[AgentServer] Config: {os.environ.get('AGENTIA_CONFIG', 'default')} | adapter={server.config.adapter_type} provider={server.config.adapter_provider} model={server.config.adapter_model}"
