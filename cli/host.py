@@ -19,6 +19,19 @@ from urllib.request import Request, urlopen
 DEFAULT_REGISTRY = Path.home() / ".agentia" / "agents.json"
 CONV_BASE = Path.home() / ".agentia" / "conversations"
 
+def _slugify_message(message: str, max_len: int = 50) -> str:
+    """Derive a slugified session name from a message.
+    
+    If message is short (< 10 chars), returns a timestamp-based fallback.
+    Otherwise returns first `max_len` chars, slugified.
+    """
+    if len(message.strip()) < 10:
+        return f"session-{time.strftime("%Y-%m-%dT%H-%M-%S")}"
+    slug = re.sub(r'[^a-zA-Z0-9\s]', '', message.lower())
+    slug = re.sub(r'\s+', '-', slug).strip('-')[:max_len]
+    return slug or f"session-{time.strftime("%Y-%m-%dT%H-%M-%S")}"
+
+
 
 # ─── Registry ────────────────────────────────────────────────────────────────
 
@@ -310,18 +323,33 @@ def cmd_agents() -> int:
     return 0
 
 
-def cmd_send(name: str, message: str, conv: str | None = None) -> int:
+def cmd_send(name: str, message: str, conv: str | None = None, new_conv: bool = False) -> int:
     """Send a message to an agent. Blocks until response.
 
+    If --new is set, starts a fresh conversation named from the message content
+    (first ~50 chars, slugified). If message is < 10 chars, uses timestamp fallback.
+
     If conv is specified, routes to that named conversation.
-    If conv is not specified, uses the smart router (Layer C):
+
+    If neither is set, uses the smart router (Layer C):
       - Reads .active/<agent>.jsonl for last-used conversation
       - Falls back to GET /sessions for most recent agent-side session
       - Creates "default" conversation if nothing exists
     """
-    print(f"[agentia] Sending to '{name}'..." + (f" (conv={conv})" if conv else ""))
+    print(f"[agentia] Sending to '{name}'..." +
+          (f" (--new)" if new_conv else f" (conv={conv})" if conv else ""))
 
-    if conv:
+    if new_conv:
+        # Start a new conversation named from the message
+        conv_name = _slugify_message(message)
+        session_info = _http_post(name, "/sessions/new", {"name": conv_name}, timeout=10)
+        if not session_info:
+            print(f"[agentia] Failed to create new session '{conv_name}'")
+            return 1
+        response = _http_post(name, f"/sessions/{conv_name}/message", {"content": message}, timeout=120)
+        if response:
+            _set_active_conv(name, conv_name, conv_name)
+    elif conv:
         # Explicit conversation: create/resume then send
         session_info = _http_post(name, "/sessions/new", {"name": conv}, timeout=10)
         if not session_info:
@@ -795,6 +823,8 @@ def main() -> int:
     p_send.add_argument("message", nargs="...", help="Message to send")
     p_send.add_argument("--conv", "-c", dest="conv", default=None,
                         help="Conversation/session name (enables session management)")
+    p_send.add_argument("--new", "-n", dest="new", action="store_true",
+                        help="Start a new conversation with a name derived from the first message")
 
     # status <name>
     p_status = sub.add_parser("status", help="Get agent status")
@@ -880,7 +910,8 @@ def main() -> int:
 
     if args.command == "send":
         message = " ".join(args.message) if args.message else ""
-        return cmd_send(args.name, message, conv=getattr(args, "conv", None))
+        return cmd_send(args.name, message, conv=getattr(args, "conv", None),
+                         new_conv=getattr(args, "new", False))
 
     if args.command == "sessions":
         return cmd_sessions_list(args.name)
