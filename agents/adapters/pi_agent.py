@@ -97,23 +97,34 @@ class PiAgentAdapter(AgentAdapter):
         session_dir = self._workspace / ".pi" / "sessions"
         session_dir.mkdir(parents=True, exist_ok=True)
 
+        # Build pi command args — inject AGENTS.md content as system prompt
+        pi_args = [
+            "pi",
+            "--mode",
+            "rpc",
+            "--provider",
+            self._provider,
+            "--model",
+            self._model,
+            "--session-dir",
+            str(session_dir),
+        ]
+
+        # Load AGENTS.md and pass as appended system prompt
+        agents_file = self._workspace / "AGENTS.md"
+        if agents_file.exists():
+            content = agents_file.read_text().strip()
+            if content:
+                pi_args += ["--append-system-prompt", content]
+
         self._proc = subprocess.Popen(
-            [
-                "pi",
-                "--mode",
-                "rpc",
-                "--provider",
-                self._provider,
-                "--model",
-                self._model,
-                "--session-dir",
-                str(session_dir),
-            ],
+            pi_args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            cwd=str(self._workspace),
         )
 
         self._response_buffer.clear()
