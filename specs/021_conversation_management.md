@@ -1,7 +1,7 @@
 # Conversation Management — Full Architectural Design
 
 **Spec:** 021  
-**Status:** Draft  
+**Status:** Fully implemented (Phase 1 + 2 + 3)  
 **Supersedes:** SPEC 020 (session management internals remain unchanged)
 
 ---
@@ -26,7 +26,7 @@ Four layers work together to provide seamless conversation management:
 │    crocus-cfd.jsonl                → looks up last conv for agent      │
 │    tax-2025.jsonl                  → resumes existing or creates new   │
 │                                                                     │
-│  Layer D: REPL (future)                                              │
+│  Layer D: REPL (agentia chat)                                        │
 │    agentia chat <name>                                             │
 │    prompt_toolkit TUI                                              │
 └─────────────────────────────────────────────────────────────────────┘
@@ -367,22 +367,21 @@ When the CLI routes a message:
 
 ## Implementation Order
 
-### Phase 1: Layer C (Smart Router)
-- Add `.active/<agent>.jsonl` tracking
+### ✅ Phase 1: Layer C (Smart Router) — IMPLEMENTED
+- `.active/<agent>.jsonl` tracking
 - `send` without `--conv` reads `.active/` → routes to last conversation
-- After send: update both `.active/` and Layer A conversation file
-- **Impact:** Biggest UX win, smallest code change
+- After send: updates both `.active/` and Layer A conversation file
+- `--new` flag: creates new session named from first message
 
-### Phase 2: Layer A (Conversation Registry)
-- Add `conv list`, `conv show`, `conv rename`, `conv tag`, `conv delete` commands
-- Create `conversations/<id>.jsonl` on first message in a new conversation
-- Background archival job for idle conversations
+### ✅ Phase 2: Layer A (Conversation Registry) — IMPLEMENTED
+- `conv list [--agent]`, `conv show`, `conv rename`, `conv tag`, `conv delete`, `conv use`
+- `conversations/<id>.jsonl` created/updated after every send
+- Background archival: NOT YET (can be added later)
 
-### Phase 3: Layer D (Interactive REPL)
-- Add `chat <name> [--conv <conv>]` command
-- Use `prompt_toolkit` for TUI
-- Implement `/switch`, `/new`, `/sessions`, `/quit`
-- Can be iterated on independently
+### ✅ Phase 3: Layer D (Interactive REPL) — IMPLEMENTED
+- `chat <name> [--conv <conv>] [--new]` — prompt_toolkit TUI
+- `/switch`, `/new`, `/sessions`, `/compact`, `/status`, `/conv`, `/clear`, `/help`, `/quit`
+- History: `~/.agentia/history/<name>.hist`
 
 ---
 
