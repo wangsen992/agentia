@@ -7,7 +7,6 @@ Commands: setup, serve
 """
 
 import argparse
-import argparse
 import os
 import subprocess
 import sys

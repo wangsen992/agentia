@@ -184,7 +184,8 @@ def _http_post_or_409(name: str, path: str, data: dict, timeout: float = 120) ->
         if e.code == 409:
             return None, True
         return None, False
-    except URLError:
+    except URLError as e:
+        print(f"[agentia] Connection failed: {e.reason}")
         return None, False
 
 
@@ -649,10 +650,8 @@ def cmd_files(name: str, subcmd: str, path: str, content: str | None) -> int:
         fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         try:
             os.write(fd, original)
+        finally:
             os.close(fd)
-        except:
-            os.close(fd)
-            raise
 
         exe = editor.split()[0]
         print(f"[agentia] Opening in {exe}... (save & close to upload changes)")
@@ -872,10 +871,7 @@ def cmd_chat(name: str, conv: str | None = None, new_conv: bool = False) -> int:
         except ImportError:
             print("[agentia] prompt_toolkit not installed. Run: pip install prompt_toolkit")
             return 1
-    from prompt_toolkit import PromptSession
-    from prompt_toolkit.history import FileHistory
-    from prompt_toolkit.styles import Style
-    from prompt_toolkit.shortcuts import clear
+    # prompt_toolkit already imported in the guard block above
 
     # ── State ──────────────────────────────────────────────────────────────
     current_agent_name = name
@@ -1109,12 +1105,12 @@ def cmd_prune() -> int:
             req = Request(f"{url}/status")
             with urlopen(req, timeout=5) as resp:
                 if resp.status >= 200 and resp.status < 300:
-                    print(f"[prune] {name}: OK ({url})")
+                    print(f"[agentia] {name}: OK ({url})")
                     continue
-        except Exception as e:
+        except Exception:
             pass
 
-        print(f"[prune] {name}: unreachable — removing ({url})")
+        print(f"[agentia] {name}: unreachable — removing ({url})")
         del registry["agents"][name]
         pruned.append(name)
 
