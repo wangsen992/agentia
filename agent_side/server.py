@@ -429,7 +429,7 @@ class AgentServerHandler(BaseHTTPRequestHandler):
         DELETE /files/<path> → delete file/directory
         LIST /files/<path>  → list directory
         """
-        workspace = Path(os.path.expanduser(self._harness.config.adapter_workspace))
+        workspace = Path(os.path.expanduser(self._harness.config.adapter_workspace)).resolve()
         target = (workspace / file_path).resolve()
 
         # Reject path traversal — ensure resolved path is under workspace

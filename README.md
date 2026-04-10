@@ -55,7 +55,8 @@ Run the current tests with:
 python3 -m unittest -v \
   tests/test_current_surface.py \
   tests/test_host_cli_e2e.py \
-  tests/test_more_cli_and_api.py
+  tests/test_more_cli_and_api.py \
+  tests/test_agentserver_endpoints.py
 ```
 
 What this covers today:
@@ -68,11 +69,13 @@ What this covers today:
 - additional host CLI coverage for:
   - `snapshot`, `clean`, `prune`
 - direct API-level check for file path traversal protection in `AgentServerHandler._handle_files`
+- in-process AgentServer handler tests for:
+  - `/status`, `/config`, `/sessions`, session messaging, deletion, and file PUT/GET flows
 
 What this does **not** fully cover yet:
 - live end-to-end runs against a real pi-backed AgentServer
 - full REPL interaction testing
-- deeper API tests across all AgentServer endpoints
+- broader API coverage for async/inbox-oriented paths
 
 The older root-level relay/moderator tests are not sufficient validation for the current host/server/session architecture.
 
@@ -98,7 +101,8 @@ cd agentia
 python3 -m unittest -v \
   tests/test_current_surface.py \
   tests/test_host_cli_e2e.py \
-  tests/test_more_cli_and_api.py
+  tests/test_more_cli_and_api.py \
+  tests/test_agentserver_endpoints.py
 
 docker build -t agentia .
 mkdir -p ~/.agentia/agents/my-agent
@@ -488,9 +492,10 @@ Current product-surface tests live under `tests/`.
 
 ```text
 tests/
-  test_current_surface.py   # targeted tests for conversation/session/files semantics
-  test_host_cli_e2e.py      # end-to-end host CLI tests against a fake AgentServer
-  test_more_cli_and_api.py  # snapshot/clean/prune coverage + API-level safety checks
+  test_current_surface.py      # targeted tests for conversation/session/files semantics
+  test_host_cli_e2e.py         # end-to-end host CLI tests against a fake AgentServer
+  test_more_cli_and_api.py     # snapshot/clean/prune coverage + API-level safety checks
+  test_agentserver_endpoints.py # in-process AgentServer handler endpoint tests
 ```
 
 Run them with:
@@ -499,7 +504,8 @@ Run them with:
 python3 -m unittest -v \
   tests/test_current_surface.py \
   tests/test_host_cli_e2e.py \
-  tests/test_more_cli_and_api.py
+  tests/test_more_cli_and_api.py \
+  tests/test_agentserver_endpoints.py
 ```
 
 These are the tests you should trust first when working on the current host/server/session/files surface.
@@ -542,6 +548,7 @@ tests/
     test_current_surface.py         # targeted tests for current semantics
     test_host_cli_e2e.py            # fake-server end-to-end CLI tests
     test_more_cli_and_api.py        # snapshot/clean/prune + API-level safety checks
+    test_agentserver_endpoints.py   # in-process AgentServer handler endpoint tests
 
 relay/                              # Deprecated (legacy; not current validation target)
 ```
@@ -571,7 +578,8 @@ If you modify the current host/server/session/files surface, do this before you 
    python3 -m unittest -v \
      tests/test_current_surface.py \
      tests/test_host_cli_e2e.py \
-     tests/test_more_cli_and_api.py
+     tests/test_more_cli_and_api.py \
+     tests/test_agentserver_endpoints.py
    ```
 2. Update `README.md` if the user-facing workflow, command surface, caveats, or validation story changed.
 3. Update the relevant spec(s) if behavior changed intentionally:
@@ -614,6 +622,10 @@ pip install jinja2
 ### The README says something works, but the repo behaves differently
 
 Trust the current tests first, then the current CLI help output, then the specs. If you find drift, update the README in the same change.
+
+### File PUT/GET behaves strangely on macOS temp paths
+
+A real bug existed here: comparing a resolved target path against an unresolved workspace path can falsely trigger path-traversal protection on macOS (`/var` vs `/private/var`). The current handler now resolves the workspace path before checking containment.
 
 ## References
 
