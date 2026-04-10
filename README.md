@@ -45,7 +45,71 @@ Agent A's host.py ──── HTTP ──── Agent B's AgentServer
 
 ---
 
+## Current Status
+
+The current host/session/files surface is implemented and now has a lightweight regression suite for the **current** product shape.
+
+Run the current tests with:
+
+```bash
+python3 -m unittest -v tests/test_current_surface.py tests/test_host_cli_e2e.py
+```
+
+What this covers today:
+- host conversation command semantics
+- smart-router session bookkeeping
+- session deletion by resolved title
+- file PUT created-vs-updated semantics
+- host CLI end-to-end flows against a lightweight fake AgentServer
+  - `register`, `agents`, `status`, `configure`, `sessions`, `send`, `compact`, `session delete`, `files`
+
+What this does **not** fully cover yet:
+- live end-to-end runs against a real pi-backed AgentServer
+- `snapshot`, `clean`, and `prune`
+- full REPL interaction testing
+
+The older root-level relay/moderator tests are not sufficient validation for the current host/server/session architecture.
+
+## Prerequisites
+
+For local development and basic CLI usage:
+- Python 3.11+ recommended
+- Docker (for the container quick start)
+- `MINIMAX_API_KEY` set if using the MiniMax examples
+
+Optional but currently useful:
+- `prompt_toolkit` for `python3 cli/host.py chat ...`
+- `jinja2` for `python3 cli/agent.py setup ...`
+
 ## Quick Start
+
+### Fastest happy path
+
+If you just want to sanity-check the current stack quickly:
+
+```bash
+cd agentia
+python3 -m unittest -v tests/test_current_surface.py tests/test_host_cli_e2e.py
+
+docker build -t agentia .
+mkdir -p ~/.agentia/agents/my-agent
+
+docker run -d --name my-agent -p 18080:8080 \
+  -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
+  -v ~/.agentia/agents/my-agent:/workspace \
+  agentia-agent serve \
+    --install pi-agent \
+    --config /workspace/agent.json \
+    --provider minimax \
+    --model MiniMax-M2.7 \
+    --workspace /workspace
+
+python3 cli/host.py register http://localhost:18080 --name my-agent
+python3 cli/host.py status my-agent
+python3 cli/host.py send my-agent "What can you do?"
+```
+
+If those commands work, the current host/server/session path is basically alive.
 
 ### 1. Build the image
 
@@ -56,30 +120,46 @@ docker build -t agentia .
 
 ### 2. Start an agent container
 
+First create a clean local home for the agent:
+
+```bash
+mkdir -p ~/.agentia/agents/my-agent
+```
+
+Then start the container:
+
 ```bash
 docker run -d --name my-agent -p 18080:8080 \
     -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
-    -e PI_DIR=/root/.pi/agent \
-    -v ~/.agentia/agents/my-agent:/root/.pi/agent \
-    agentia serve \
+    -v ~/.agentia/agents/my-agent:/workspace \
+    agentia-agent serve \
       --install pi-agent \
-      --config /root/.pi/agent/agent.json \
+      --config /workspace/agent.json \
       --provider minimax \
       --model MiniMax-M2.7 \
-      --workspace /root/.pi/agent
+      --workspace /workspace
 ```
 
-> All agent state — config, sessions, workspace — lives in `~/.agentia/agents/<name>/` on the host. The container is stateless.
+> The image entrypoint is `agentia-agent`, so the command above is the direct container command.
+>
+> All agent state — config, bootstrap files, sessions, and workspace files — lives under `~/.agentia/agents/<name>/` on the host via the `/workspace` bind mount. The container is intended to be stateless.
+>
+> If port `18080` is already in use, pick another one like `18082` and use that same port in the `register` command below.
+>
+> Provider/model compatibility is **not universal**. In this repository's current state, a container may start successfully and still fail on the first `send` if the selected model is unsupported by your account or by pi-agent's current request defaults. Treat the first successful `send` as the real readiness check.
+>
+> If you hit an error on first `send`, inspect the stored pi session JSONL under `~/.agentia/agents/<name>/.pi/sessions/` for the upstream provider error, then switch to a known-good model for your account.
 
 ### 3. Send a message
 
 ```bash
-export PYTHONPATH=$PWD
-
 # Register the agent (first time only)
 python3 cli/host.py register http://localhost:18080 --name my-agent
 
-# Send a message
+# Verify the server is healthy
+python3 cli/host.py status my-agent
+
+# Send a message (this is the real model/provider validation step)
 python3 cli/host.py send my-agent "What can you do?"
 
 # List agents
@@ -93,6 +173,8 @@ python3 cli/host.py agents
 No Docker required on the remote — just Python 3 and curl. The setup script handles everything.
 
 ### On the remote machine (one-time setup)
+
+This path is for a machine where you want to run AgentServer directly without Docker.
 
 ```bash
 # Download and run the setup script
@@ -146,6 +228,21 @@ python3 cli/host.py register http://localhost:18080 --name research-agent
 
 ## Managing Agents
 
+### Cleaning local state during development
+
+If you've been iterating and want to clean up obvious host-side residue:
+
+```bash
+python3 cli/host.py clean --audit
+python3 cli/host.py clean --apply --safe
+```
+
+This only removes tier-1 safe artifacts such as empty container directories and zero-byte inbox files. It does **not** reset Docker images/containers or wipe `~/.agentia` entirely.
+
+Current implementation status:
+- implemented: `clean --audit`, `clean --apply --safe`
+- not implemented yet: category filtering, aggressive deletion, trash mode, JSON output
+
 ```bash
 # Register an agent by URL
 python3 cli/host.py register http://vm.example.com:8080 --name research-agent
@@ -184,19 +281,19 @@ python3 cli/host.py send my-agent "Update the research notes"
 python3 cli/host.py send my-agent "Let's start something new" --new
 
 # List all conversations
-python3 cli/host.py conv list my-agent
+python3 cli/host.py conv list --agent my-agent
 
 # Show conversation details
-python3 cli/host.py conv show my-agent hawaii
+python3 cli/host.py conv show hawaii
 
 # Switch active conversation
-python3 cli/host.py conv use my-agent crocus
+python3 cli/host.py conv use crocus --agent my-agent
 
 # Tag a conversation
-python3 cli/host.py conv tag my-agent hawaii --tag travel
+python3 cli/host.py conv tag hawaii travel
 
 # Delete a conversation
-python3 cli/host.py conv delete my-agent hawaii
+python3 cli/host.py conv delete hawaii
 
 # List agent sessions
 python3 cli/host.py sessions my-agent
@@ -231,6 +328,8 @@ python cli/agent.py serve \
 
 ## Interactive REPL
 
+`chat` currently depends on `prompt_toolkit`. If it is not installed, the CLI will tell you and exit instead of silently degrading.
+
 ```bash
 # Chat with an agent interactively
 python3 cli/host.py chat my-agent
@@ -258,10 +357,10 @@ Manage files in an agent's workspace over HTTP:
 
 ```bash
 python3 cli/host.py files my-agent ls
-python3 cli/host.py files my-agent get memory/2026-04-08.md
+python3 cli/host.py files my-agent get AGENTS.md
 python3 cli/host.py files my-agent put notes.md -c "Hello world"
-python3 cli/host.py files my-agent edit memory/2026-04-08.md   # Opens in $EDITOR
-python3 cli/host.py files my-agent delete tmp/cache.txt
+python3 cli/host.py files my-agent edit AGENTS.md   # Opens in $EDITOR
+python3 cli/host.py files my-agent delete notes.md
 ```
 
 ---
@@ -374,9 +473,27 @@ Agent A ────── host.py send ──────► Agent B
 
 ---
 
+## Tests
+
+Current product-surface tests live under `tests/`.
+
+```text
+tests/
+  test_current_surface.py   # targeted tests for conversation/session/files semantics
+  test_host_cli_e2e.py      # end-to-end host CLI tests against a fake AgentServer
+```
+
+Run them with:
+
+```bash
+python3 -m unittest -v tests/test_current_surface.py tests/test_host_cli_e2e.py
+```
+
+These are the tests you should trust first when working on the current host/server/session/files surface.
+
 ## Project Layout
 
-```
+```text
 cli/
     agent.py         # Agent-side CLI: setup + serve (runs in container/on agent machine)
     host.py          # Host-side CLI: send, manage, files, chat (runs anywhere)
@@ -400,15 +517,19 @@ setup/
         pi-agent/    # pi-agent install script, config template, bootstrap
 
 specs/
-    005_relay_inbox.md        # Mesh architecture, discovery, response scenarios
-    006_orchestration_patterns.md      # Moderator pattern, autonomous coordination
-    009_agentserver_api.md    # Full HTTP API reference
-    010_cli_interface.md      # CLI reference
-    012_multi_agent_mesh.md   # Peer-to-peer mesh design
-    020_session_management.md  # Session lifecycle, LRU, idle TTL
-    021_conversation_mgmt.md  # Layer A: conversation registry
+    005_relay_inbox.md              # Mesh architecture, discovery, response scenarios
+    006_orchestration_patterns.md   # Moderator pattern, autonomous coordination
+    009_agentserver_api.md          # Full HTTP API reference
+    010_cli_interface.md            # CLI reference
+    020_session_management.md       # Session lifecycle, LRU, idle TTL
+    021_conversation_management.md  # Conversation registry, smart router, REPL
+    022_host_cleanup.md             # Conservative host-folder cleanup
 
-relay/                   # Deprecated (HostContainerBackend removed 2026-04-09)
+tests/
+    test_current_surface.py         # targeted tests for current semantics
+    test_host_cli_e2e.py            # fake-server end-to-end CLI tests
+
+relay/                              # Deprecated (legacy; not current validation target)
 ```
 
 ---
@@ -427,10 +548,61 @@ relay/                   # Deprecated (HostContainerBackend removed 2026-04-09)
 
 ---
 
+## After code changes
+
+If you modify the current host/server/session/files surface, do this before you call it done:
+
+1. Run the current regression suite:
+   ```bash
+   python3 -m unittest -v tests/test_current_surface.py tests/test_host_cli_e2e.py
+   ```
+2. Update `README.md` if the user-facing workflow, command surface, caveats, or validation story changed.
+3. Update the relevant spec(s) if behavior changed intentionally:
+   - `specs/010_cli_interface.md`
+   - `specs/020_session_management.md`
+   - `specs/021_conversation_management.md`
+   - `specs/022_host_cleanup.md`
+4. If possible, do one manual sanity run of the changed path.
+5. If a new feature is only partial, say so in the README instead of implying it is fully done.
+
+## Troubleshooting
+
+### `send` fails right after the container starts
+
+Treat the first successful `send` as the real readiness check.
+
+Things to check:
+- the container is actually running
+- the port mapping matches the URL you registered
+- the model/provider pair is valid for your account
+- upstream provider errors are visible in the session JSONL under:
+  - `~/.agentia/agents/<name>/.pi/sessions/`
+
+### `python3 cli/host.py chat ...` says prompt_toolkit is missing
+
+Install it in the Python environment you use for Agentia:
+
+```bash
+pip install prompt_toolkit
+```
+
+### `python3 cli/agent.py setup ...` says jinja2 is missing
+
+Install it in the Python environment you use for Agentia:
+
+```bash
+pip install jinja2
+```
+
+### The README says something works, but the repo behaves differently
+
+Trust the current tests first, then the current CLI help output, then the specs. If you find drift, update the README in the same change.
+
 ## References
 
 - [SPEC 005 — Relay & Inbox Architecture](./specs/005_relay_inbox.md)
-- [SPEC 012 — Multi-Agent Mesh](./specs/012_multi_agent_mesh.md)
+- [SPEC 010 — CLI Interface](./specs/010_cli_interface.md)
 - [SPEC 020 — Session Management](./specs/020_session_management.md)
 - [SPEC 021 — Conversation Management](./specs/021_conversation_management.md)
+- [SPEC 022 — Host Folder Cleanup](./specs/022_host_cleanup.md)
 - [pi-agent RPC protocol](https://github.com/badlogic/pi-mono/blob/main/docs/rpc.md)
