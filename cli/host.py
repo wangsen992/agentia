@@ -35,6 +35,208 @@ def _slugify_message(message: str, max_len: int = 50) -> str:
 
 
 
+
+
+# ─── Host cleanup ─────────────────────────────────────────────────────────────
+
+HOST_BASE = Path.home() / ".agentia"
+
+
+def _host_base() -> Path:
+    HOST_BASE.mkdir(parents=True, exist_ok=True)
+    return HOST_BASE
+
+
+def _iter_empty_container_dirs(base: Path) -> list[Path]:
+    containers = base / "containers"
+    if not containers.exists():
+        return []
+    result = []
+    for p in sorted([x for x in containers.iterdir() if x.is_dir()]):
+        try:
+            next(p.rglob('*'))
+            has_any = True
+        except StopIteration:
+            has_any = False
+        if not has_any:
+            result.append(p)
+    return result
+
+
+def _iter_zero_byte_inbox_files(base: Path) -> list[Path]:
+    inbox = base / "inbox"
+    if not inbox.exists():
+        return []
+    return sorted([p for p in inbox.glob('*.jsonl') if p.is_file() and p.stat().st_size == 0])
+
+
+def _registry_destroyed_with_files(base: Path) -> list[dict]:
+    reg_path = base / "registry.json"
+    if not reg_path.exists():
+        return []
+    try:
+        data = json.loads(reg_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    out = []
+    for name, meta in (data.get("containers", {}) or {}).items():
+        if meta.get("status") != "destroyed":
+            continue
+        p = base / "containers" / name
+        file_count = 0
+        size_bytes = 0
+        if p.exists() and p.is_dir():
+            files = [f for f in p.rglob('*') if f.is_file()]
+            file_count = len(files)
+            size_bytes = sum(f.stat().st_size for f in files)
+        if file_count > 0:
+            out.append({"name": name, "path": p, "file_count": file_count, "size_bytes": size_bytes})
+    return out
+
+
+def _unregistered_agent_homes(base: Path) -> list[dict]:
+    agents_dir = base / "agents"
+    if not agents_dir.exists():
+        return []
+    registry = _load_registry()
+    registered = set((registry.get("agents") or {}).keys())
+    out = []
+    for p in sorted([x for x in agents_dir.iterdir() if x.is_dir()]):
+        if p.name in registered:
+            continue
+        files = [f for f in p.rglob('*') if f.is_file()]
+        out.append({
+            "name": p.name,
+            "path": p,
+            "file_count": len(files),
+            "size_bytes": sum(f.stat().st_size for f in files),
+        })
+    return out
+
+
+def _dual_session_stores(base: Path) -> list[dict]:
+    agents_dir = base / "agents"
+    if not agents_dir.exists():
+        return []
+    out = []
+    for p in sorted([x for x in agents_dir.iterdir() if x.is_dir()]):
+        a = p / ".agentia" / "sessions"
+        b = p / ".pi" / "sessions"
+        if a.exists() and b.exists():
+            out.append({"name": p.name, "path": p, "stores": [".agentia/sessions", ".pi/sessions"]})
+    return out
+
+
+def _host_cleanup_audit() -> dict:
+    base = _host_base()
+    registered = set((_load_registry().get("agents") or {}).keys())
+    return {
+        "root": str(base),
+        "safe": {
+            "empty_container_dirs": _iter_empty_container_dirs(base),
+            "zero_byte_inbox_files": _iter_zero_byte_inbox_files(base),
+        },
+        "review": {
+            "destroyed_registry_with_files": _registry_destroyed_with_files(base),
+            "unregistered_agent_homes": _unregistered_agent_homes(base),
+            "dual_session_stores": _dual_session_stores(base),
+        },
+        "protected": {
+            "registered_agent_homes": sorted(list(registered)),
+        },
+    }
+
+
+def _human_size(n: int) -> str:
+    units = ["B", "KB", "MB", "GB"]
+    x = float(n)
+    for u in units:
+        if x < 1024 or u == units[-1]:
+            return f"{int(x)} {u}" if u == "B" else f"{x:.1f} {u}"
+        x /= 1024
+    return f"{n} B"
+
+
+def _print_host_cleanup_audit(audit: dict):
+    safe_dirs = audit["safe"]["empty_container_dirs"]
+    safe_files = audit["safe"]["zero_byte_inbox_files"]
+    review_destroyed = audit["review"]["destroyed_registry_with_files"]
+    review_unreg = audit["review"]["unregistered_agent_homes"]
+    review_dual = audit["review"]["dual_session_stores"]
+    protected = audit["protected"]["registered_agent_homes"]
+
+    print("Agentia host cleanup audit")
+    print(f"Root: {audit['root']}")
+    print()
+
+    print("SAFE")
+    print(f"  empty container dirs ({len(safe_dirs)})")
+    for p in safe_dirs:
+        print(f"    - {p}")
+    print(f"  zero-byte inbox files ({len(safe_files)})")
+    for p in safe_files:
+        print(f"    - {p}")
+    print()
+
+    print("REVIEW")
+    print(f"  destroyed registry entries with remaining files ({len(review_destroyed)})")
+    for item in review_destroyed:
+        print(f"    - {item['name']} ({item['file_count']} files, {_human_size(item['size_bytes'])})")
+    print(f"  unregistered agent homes ({len(review_unreg)})")
+    for item in review_unreg:
+        print(f"    - {item['name']} ({item['file_count']} files, {_human_size(item['size_bytes'])})")
+    print(f"  dual session stores ({len(review_dual)})")
+    for item in review_dual:
+        print(f"    - {item['name']}: {', '.join(item['stores'])}")
+    print()
+
+    print("PROTECTED")
+    print(f"  registered agent homes ({len(protected)})")
+    for name in protected:
+        print(f"    - {name}")
+    print()
+
+    total_safe = len(safe_dirs) + len(safe_files)
+    total_review = len(review_destroyed) + len(review_unreg) + len(review_dual)
+    print("Summary:")
+    print(f"  safe deletions: {total_safe} items")
+    print(f"  review needed: {total_review} items")
+    print(f"  protected: {len(protected)} items")
+    print()
+    print("Run with: python cli/host.py clean --apply --safe")
+
+
+def cmd_clean(apply: bool = False, safe: bool = False, audit: bool = False) -> int:
+    audit_result = _host_cleanup_audit()
+    if audit or not apply:
+        _print_host_cleanup_audit(audit_result)
+        return 0
+
+    if not safe:
+        print("[agentia] Refusing to apply cleanup without --safe. Run audit first or use --apply --safe.")
+        return 1
+
+    removed_dirs = []
+    removed_files = []
+    for p in audit_result["safe"]["empty_container_dirs"]:
+        try:
+            p.rmdir()
+            removed_dirs.append(p)
+        except OSError:
+            pass
+    for p in audit_result["safe"]["zero_byte_inbox_files"]:
+        try:
+            p.unlink()
+            removed_files.append(p)
+        except OSError:
+            pass
+
+    print("[agentia] Safe cleanup complete")
+    print(f"  removed empty container dirs: {len(removed_dirs)}")
+    print(f"  removed zero-byte inbox files: {len(removed_files)}")
+    return 0
+
+
 # ─── Registry ────────────────────────────────────────────────────────────────
 
 def _load_registry(path: Path = DEFAULT_REGISTRY) -> dict:
@@ -231,7 +433,7 @@ def _smart_route(agent_name: str, message: str, explicit_conv: str | None) -> di
                 message_count=response.get("message_count", 0),
                 context_pct=response.get("context_pct", 0),
             )
-            _set_active_conv(agent_name, conv_to_use, conv_to_use)
+            _set_active_conv(agent_name, conv_to_use, session_name)
             return response
         if not is_409:
             print("[agentia] Failed to send message")
@@ -264,7 +466,7 @@ def _smart_route(agent_name: str, message: str, explicit_conv: str | None) -> di
                     message_count=response.get("message_count", 0),
                     context_pct=response.get("context_pct", 0),
                 )
-                _set_active_conv(agent_name, conv_to_use, conv_to_use)
+                _set_active_conv(agent_name, conv_to_use, session_name)
                 return response
 
     # Step 4: Nothing available — create new "default" session
@@ -411,6 +613,27 @@ def cmd_agents() -> int:
     return 0
 
 
+def _format_agent_response(response: dict) -> tuple[str, bool]:
+    """Extract a user-facing message from an AgentServer response.
+
+    Returns (text, ok). ok=False indicates the response represented a runtime/model error.
+    """
+    content = response.get("response") or response.get("content") or response.get("stdout", "")
+    if isinstance(content, dict):
+        content = response.get("response", "")
+
+    if isinstance(content, str) and content.strip():
+        return content, True
+
+    # Surface provider/model errors from structured session responses that otherwise
+    # look like successful-but-empty replies.
+    err = response.get("error")
+    if err:
+        return f"[agentia] Agent error: {err}", False
+
+    return "[agentia] Agent returned no text. This usually means the configured provider/model failed or produced an empty response.", False
+
+
 def cmd_send(name: str, message: str, conv: str | None = None, new_conv: bool = False) -> int:
     """Send a message to an agent. Blocks until response.
 
@@ -467,15 +690,11 @@ def cmd_send(name: str, message: str, conv: str | None = None, new_conv: bool = 
 
     if not response:
         return 1
-    content = response.get("response") or response.get("content") or response.get("stdout", "")
-    if isinstance(content, dict):
-        # Session API returns structured response
-        print(response.get("response", content))
-        if response.get("compact_triggered"):
-            print(f"[agentia] Auto-compacted (context threshold reached)")
-    else:
-        print(content)
-    return 0
+    content, ok = _format_agent_response(response)
+    print(content)
+    if response.get("compact_triggered"):
+        print(f"[agentia] Auto-compacted (context threshold reached)")
+    return 0 if ok else 1
 
 
 def cmd_status(name: str) -> int:
@@ -634,7 +853,7 @@ def cmd_files(name: str, subcmd: str, path: str, content: str | None) -> int:
                     editor = f"{candidate} --wait" if candidate == "code" else candidate
                     break
         if not editor:
-            print("[agentia] No editor found. Set $EDITOR or install nano/vim")
+            print("[agentia] No editor found. Set the EDITOR environment variable or install nano/vim")
             return 1
 
         # GET file
@@ -657,7 +876,7 @@ def cmd_files(name: str, subcmd: str, path: str, content: str | None) -> int:
         exe = editor.split()[0]
         print(f"[agentia] Opening in {exe}... (save & close to upload changes)")
 
-        # Open in editor and wait — editor is already validated (shutil.which or $EDITOR)
+        # Open in editor and wait — editor is already validated (shutil.which or EDITOR env)
         result = subprocess.run(editor.split() + [tmp_path])
         if result.returncode != 0:
             print(f"[agentia] Editor exited with code {result.returncode}")
@@ -779,7 +998,7 @@ def cmd_conv_show(conv_id: str) -> int:
     conv = _load_conv(conv_id)
     if conv.get("agent_name") == "":
         print(f"[agentia] Conversation '{conv_id}' not found.")
-        return 0  # Not found is a valid query result, not an error
+        return 1
     print(f"ID:          {conv['id']}")
     print(f"Title:       {conv.get('title', '')}")
     print(f"Agent:       {conv.get('agent_name', '')}")
@@ -798,7 +1017,7 @@ def cmd_conv_rename(conv_id: str, title: str) -> int:
     conv = _load_conv(conv_id)
     if conv.get("agent_name") == "":
         print(f"[agentia] Conversation '{conv_id}' not found.")
-        return 0  # Not found is a valid query result, not an error
+        return 1
     old_title = conv.get("title", "")
     conv["title"] = title
     _save_conv(conv_id, conv)
@@ -811,7 +1030,7 @@ def cmd_conv_tag(conv_id: str, tags: list[str], clear: bool = False) -> int:
     conv = _load_conv(conv_id)
     if conv.get("agent_name") == "":
         print(f"[agentia] Conversation '{conv_id}' not found.")
-        return 0  # Not found is a valid query result, not an error
+        return 1
     if clear:
         conv["tags"] = tags
     else:
@@ -829,7 +1048,7 @@ def cmd_conv_delete(conv_id: str) -> int:
     path = _conv_file(conv_id)
     if not path.exists():
         print(f"[agentia] Conversation '{conv_id}' not found.")
-        return 0  # Not found is a valid query result, not an error
+        return 1
     path.unlink()
     print(f"[agentia] Deleted conversation registry: {conv_id}")
     return 0
@@ -1333,6 +1552,12 @@ def main() -> int:
     # prune
     sub.add_parser("prune", help="Remove unreachable agents from registry")
 
+    # clean
+    p_clean = sub.add_parser("clean", help="Audit or clean ~/.agentia host artifacts")
+    p_clean.add_argument("--audit", action="store_true", help="Inspect host artifacts without deleting anything")
+    p_clean.add_argument("--apply", action="store_true", help="Apply cleanup actions")
+    p_clean.add_argument("--safe", action="store_true", help="Only apply tier-1 safe cleanup actions")
+
     # sessions <name> — list sessions
     p_sess = sub.add_parser("sessions", help="List agent sessions")
     p_sess.add_argument("name", help="Agent name")
@@ -1363,7 +1588,7 @@ def main() -> int:
     p_files = sub.add_parser("files", help="Access agent workspace files")
     p_files.add_argument("name", help="Agent name")
     p_files.add_argument("subcmd", choices=["get", "put", "delete", "ls", "edit"], help="Subcommand")
-    p_files.add_argument("path", help="Path relative to workspace (e.g. AGENTS.md, .pi/skills/)")
+    p_files.add_argument("path", nargs="?", default=".", help="Path relative to workspace (default for ls: .)")
     p_files.add_argument("--content", "-c", default=None, help="File content for 'put'")
     p_files.add_argument("--from", dest="from_file", default=None, help="Read content from file")
 
@@ -1443,6 +1668,13 @@ def main() -> int:
 
     if args.command == "prune":
         return cmd_prune()
+
+    if args.command == "clean":
+        return cmd_clean(
+            apply=getattr(args, "apply", False),
+            safe=getattr(args, "safe", False),
+            audit=getattr(args, "audit", False),
+        )
 
     if args.command == "forward":
         return cmd_forward(args.name, args.method.upper(), args.path, args.data)

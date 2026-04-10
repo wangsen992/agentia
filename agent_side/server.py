@@ -458,9 +458,9 @@ class AgentServerHandler(BaseHTTPRequestHandler):
 
         if method == "PUT":
             target.parent.mkdir(parents=True, exist_ok=True)
+            created = not target.exists()
             content = self.rfile.read(int(self.headers.get("Content-Length", 0)))
             target.write_bytes(content)
-            created = not any(p.name == target.name for p in target.parent.iterdir())
             self._send_json(201 if created else 200, {"path": file_path})
             return
 

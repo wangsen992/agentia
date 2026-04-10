@@ -388,6 +388,16 @@ class SessionManager:
                         if text:
                             session._response_buffer.append(text)
 
+                elif etype == "message":
+                    msg = event.get("message", {})
+                    if msg.get("role") == "assistant":
+                        parts = msg.get("content", []) or []
+                        text_parts = [p.get("text", "") for p in parts if p.get("type") == "text"]
+                        if text_parts:
+                            session._response_buffer.append("".join(text_parts))
+                        elif msg.get("errorMessage"):
+                            session._response_buffer.append(f"[agentia] Upstream model error: {msg.get('errorMessage')}")
+
                 elif etype == "agent_end":
                     # Don't signal while a compaction triggered by this agent_end is pending.
                     # The _compact_pending flag is set by send_message when it triggers
@@ -738,7 +748,7 @@ class SessionManager:
                 sf.unlink()
 
         # Remove from sessions dict
-        del self._sessions[name]
+        del self._sessions[resolved]
 
         # Rewrite manifest without this entry
         self._save_manifest()
