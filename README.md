@@ -52,7 +52,10 @@ The current host/session/files surface is implemented and now has a lightweight 
 Run the current tests with:
 
 ```bash
-python3 -m unittest -v tests/test_current_surface.py tests/test_host_cli_e2e.py
+python3 -m unittest -v \
+  tests/test_current_surface.py \
+  tests/test_host_cli_e2e.py \
+  tests/test_more_cli_and_api.py
 ```
 
 What this covers today:
@@ -62,11 +65,14 @@ What this covers today:
 - file PUT created-vs-updated semantics
 - host CLI end-to-end flows against a lightweight fake AgentServer
   - `register`, `agents`, `status`, `configure`, `sessions`, `send`, `compact`, `session delete`, `files`
+- additional host CLI coverage for:
+  - `snapshot`, `clean`, `prune`
+- direct API-level check for file path traversal protection in `AgentServerHandler._handle_files`
 
 What this does **not** fully cover yet:
 - live end-to-end runs against a real pi-backed AgentServer
-- `snapshot`, `clean`, and `prune`
 - full REPL interaction testing
+- deeper API tests across all AgentServer endpoints
 
 The older root-level relay/moderator tests are not sufficient validation for the current host/server/session architecture.
 
@@ -89,7 +95,10 @@ If you just want to sanity-check the current stack quickly:
 
 ```bash
 cd agentia
-python3 -m unittest -v tests/test_current_surface.py tests/test_host_cli_e2e.py
+python3 -m unittest -v \
+  tests/test_current_surface.py \
+  tests/test_host_cli_e2e.py \
+  tests/test_more_cli_and_api.py
 
 docker build -t agentia .
 mkdir -p ~/.agentia/agents/my-agent
@@ -481,12 +490,16 @@ Current product-surface tests live under `tests/`.
 tests/
   test_current_surface.py   # targeted tests for conversation/session/files semantics
   test_host_cli_e2e.py      # end-to-end host CLI tests against a fake AgentServer
+  test_more_cli_and_api.py  # snapshot/clean/prune coverage + API-level safety checks
 ```
 
 Run them with:
 
 ```bash
-python3 -m unittest -v tests/test_current_surface.py tests/test_host_cli_e2e.py
+python3 -m unittest -v \
+  tests/test_current_surface.py \
+  tests/test_host_cli_e2e.py \
+  tests/test_more_cli_and_api.py
 ```
 
 These are the tests you should trust first when working on the current host/server/session/files surface.
@@ -528,6 +541,7 @@ specs/
 tests/
     test_current_surface.py         # targeted tests for current semantics
     test_host_cli_e2e.py            # fake-server end-to-end CLI tests
+    test_more_cli_and_api.py        # snapshot/clean/prune + API-level safety checks
 
 relay/                              # Deprecated (legacy; not current validation target)
 ```
@@ -554,7 +568,10 @@ If you modify the current host/server/session/files surface, do this before you 
 
 1. Run the current regression suite:
    ```bash
-   python3 -m unittest -v tests/test_current_surface.py tests/test_host_cli_e2e.py
+   python3 -m unittest -v \
+     tests/test_current_surface.py \
+     tests/test_host_cli_e2e.py \
+     tests/test_more_cli_and_api.py
    ```
 2. Update `README.md` if the user-facing workflow, command surface, caveats, or validation story changed.
 3. Update the relevant spec(s) if behavior changed intentionally:
