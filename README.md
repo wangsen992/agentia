@@ -9,6 +9,7 @@
 Agentia is a lightweight framework for running multiple AI agents across different machines, with each agent running as an independent HTTP server. You communicate with agents using a simple CLI — from your Mac, from another agent, from a script.
 
 **The key idea:** every machine runs the same two things:
+
 - **`agent.py`** — the server, exposing an HTTP API
 - **`host.py`** — the client, available as a CLI tool and to other agents
 
@@ -38,6 +39,7 @@ Agent A's host.py ──── HTTP ──── Agent B's AgentServer
 ```
 
 **Two CLIs:**
+
 - **`python cli/agent.py`** — runs on each agent machine, starts the HTTP server
 - **`python cli/host.py`** — runs anywhere, sends messages to any agent by URL
 
@@ -59,7 +61,7 @@ docker run -d --name my-agent -p 18080:8080 \
     -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
     -e PI_DIR=/root/.pi/agent \
     -v ~/.agentia/agents/my-agent:/root/.pi/agent \
-    python cli/agent.py serve \
+    agentia serve \
       --install pi-agent \
       --config /root/.pi/agent/agent.json \
       --provider minimax \
@@ -90,7 +92,7 @@ python3 cli/host.py agents
 
 No Docker required on the remote — just Python 3 and curl. The setup script handles everything.
 
-### On the remote machine (one-time setup):
+### On the remote machine (one-time setup)
 
 ```bash
 # Download and run the setup script
@@ -114,12 +116,13 @@ python3 cli/agent.py serve --config ~/.pi/agent/agent.json \
 ```
 
 The setup script:
+
 1. Checks prerequisites (Python 3.8+, curl)
 2. Installs pi-agent (binary + companion files)
 3. Creates the agent config at `~/.pi/agent/agent.json`
 4. Prints the AgentServer URL and registration command
 
-### On your Mac:
+### On your Mac
 
 ```bash
 # Register the remote agent
@@ -129,7 +132,7 @@ python3 cli/host.py register http://<vm-ip>:8080 --name research-agent
 python3 cli/host.py send research-agent "What can you do?"
 ```
 
-### If the VM has no public IP (SSH tunnel fallback):
+### If the VM has no public IP (SSH tunnel fallback)
 
 ```bash
 # SSH tunnel: remote port 8080 → local 18080
@@ -240,6 +243,7 @@ python3 cli/host.py chat my-agent --new
 ```
 
 Inside the REPL:
+
 - Type messages to send to the agent
 - `/new` — start a new conversation
 - `/conv <name>` — switch to an existing conversation
@@ -311,6 +315,7 @@ python3 cli/host.py snapshot my-agent
 ### Example responses
 
 **GET /status:**
+
 ```json
 {
   "agent_id": "agent-001",
@@ -325,6 +330,7 @@ python3 cli/host.py snapshot my-agent
 ```
 
 **GET /sessions:**
+
 ```json
 [
   {"name": "2026-04-09T00-22-30_hawaii", "title": "hawaii", "status": "running", "message_count": 12, "context_pct": 23, "last_active": "2026-04-09T03:00:00Z"},
