@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentia"
+version = "0.1.0"
+description = "Host and agent-side CLI tooling for AgentServer-based AI agents"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Sen Wang" }
+]
+dependencies = [
+  "prompt_toolkit>=3.0",
+]
+
+[project.optional-dependencies]
+setup = [
+  "jinja2>=3.1",
+]
+
+[project.scripts]
+agentia = "cli.host:main"
+agentia-host = "cli.host:main"
+agentia-agent = "cli.agent:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = [
+  "agent_side*",
+  "agents*",
+  "cli*",
+  "relay*",
+  "examples*",
+]
+exclude = [
+  "tests*",
+  "dev*",
+  "research*",
+  "reviews*",
+  "containers*",
+  "setup*",
+]

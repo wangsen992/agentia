@@ -91,10 +91,24 @@ For local development and basic CLI usage:
 - Python 3.11+ recommended
 - Docker (for the container quick start)
 - `MINIMAX_API_KEY` set if using the MiniMax examples
+- `prompt_toolkit` is a standard required install dependency for Agentia
 
-Optional but currently useful:
-- `prompt_toolkit` for `python3 cli/host.py chat ...`
-- `jinja2` for `python3 cli/agent.py setup ...`
+Additional feature-scoped dependency:
+- `jinja2` for `python3 cli/agent.py setup ...` and `python3 cli/agent.py serve --install ...`
+
+## Installation
+
+Install the standard Agentia CLI dependency set:
+
+```bash
+pip install .
+```
+
+If you also want agent setup/bootstrap templating support:
+
+```bash
+pip install '.[setup]'
+```
 
 ## Quick Start
 
@@ -350,7 +364,7 @@ python cli/agent.py serve \
 
 ## Interactive REPL
 
-`chat` currently depends on `prompt_toolkit`. If it is not installed, the CLI will tell you and exit instead of silently degrading.
+`chat` depends on `prompt_toolkit`, which is now a standard install dependency via `pip install .`.
 
 ```bash
 # Chat with an agent interactively
@@ -626,18 +640,18 @@ Things to check:
 
 ### `python3 cli/host.py chat ...` says prompt_toolkit is missing
 
-Install it in the Python environment you use for Agentia:
+Your Agentia install is incomplete. Reinstall the standard package dependencies in the Python environment you use for Agentia:
 
 ```bash
-pip install prompt_toolkit
+pip install .
 ```
 
 ### `python3 cli/agent.py setup ...` says jinja2 is missing
 
-Install it in the Python environment you use for Agentia:
+Install the setup extra in the Python environment you use for Agentia:
 
 ```bash
-pip install jinja2
+pip install '.[setup]'
 ```
 
 ### The README says something works, but the repo behaves differently
