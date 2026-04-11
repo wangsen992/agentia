@@ -6,6 +6,7 @@ import unittest
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import sys
@@ -84,6 +85,20 @@ class FakeHostMoreHandler(BaseHTTPRequestHandler):
         return
 
 
+class FakePromptSession:
+    inputs = []
+
+    def __init__(self, *args, **kwargs):
+        self._idx = 0
+
+    def prompt(self, *args, **kwargs):
+        if self._idx >= len(self.inputs):
+            raise EOFError
+        value = self.inputs[self._idx]
+        self._idx += 1
+        return value
+
+
 class HostCliMoreTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -152,6 +167,61 @@ class HostCliMoreTest(unittest.TestCase):
         rc, out = self._capture(host.cmd_status, "missing")
         self.assertEqual(rc, 1)
         self.assertIn("not found", out.lower())
+
+    def test_chat_new_session_routes_following_message_to_new_session(self):
+        FakePromptSession.inputs = ["/new session-2", "hello second session", "/quit"]
+        calls = []
+
+        def fake_post(name, path, data, timeout=10):
+            if path == "/sessions/new":
+                return {"name": "2026-04-11T16-20-00_session-2", "title": "session-2", "status": "running"}
+            return None
+
+        def fake_post_or_409(name, path, data, timeout=120):
+            calls.append((path, data))
+            if path == "/sessions/2026-04-11T16-20-00_session-2/message":
+                return ({"response": "ok", "message_count": 1, "context_pct": 3}, False)
+            return (None, False)
+
+        with patch.object(host, "_from_ptk_imported", True), \
+             patch.object(host, "PromptSession", FakePromptSession, create=True), \
+             patch.object(host, "FileHistory", lambda *a, **k: None, create=True), \
+             patch.object(host, "Style", SimpleNamespace(from_dict=lambda *a, **k: None), create=True), \
+             patch.object(host, "clear", lambda: None, create=True), \
+             patch.object(host, "_http_post", side_effect=fake_post), \
+             patch.object(host, "_http_post_or_409", side_effect=fake_post_or_409), \
+             patch.object(host, "_smart_route", return_value={"response": "wrong path"}) as smart_route:
+            rc, out = self._capture(host.cmd_chat, "fake", None, False)
+
+        self.assertEqual(rc, 0)
+        self.assertIn("New conversation: 'session-2'", out)
+        self.assertEqual(calls, [
+            ("/sessions/2026-04-11T16-20-00_session-2/message", {"content": "hello second session"})
+        ])
+        smart_route.assert_not_called()
+
+    def test_chat_new_without_title_generates_random_session_name(self):
+        FakePromptSession.inputs = ["/new", "/quit"]
+        seen = []
+
+        def fake_post(name, path, data, timeout=10):
+            if path == "/sessions/new":
+                seen.append(data["name"])
+                return {"name": f"2026-04-11T18-14-00_{data['name']}", "title": data["name"], "status": "running"}
+            return None
+
+        with patch.object(host, "_from_ptk_imported", True), \
+             patch.object(host, "PromptSession", FakePromptSession, create=True), \
+             patch.object(host, "FileHistory", lambda *a, **k: None, create=True), \
+             patch.object(host, "Style", SimpleNamespace(from_dict=lambda *a, **k: None), create=True), \
+             patch.object(host, "clear", lambda: None, create=True), \
+             patch.object(host, "_http_post", side_effect=fake_post):
+            rc, out = self._capture(host.cmd_chat, "fake", None, False)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(seen), 1)
+        self.assertRegex(seen[0], r"^session-[a-z0-9]{8}$")
+        self.assertIn(f"New conversation: '{seen[0]}'", out)
 
 
 if __name__ == "__main__":

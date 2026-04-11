@@ -10,8 +10,10 @@ Commands: register, agents, send, status, configure, update, deregister, forward
 
 import argparse
 import json
+import random
 import re
 import shutil
+import string
 import sys
 import time
 from pathlib import Path
@@ -20,6 +22,11 @@ from urllib.request import Request, urlopen
 
 DEFAULT_REGISTRY = Path.home() / ".agentia" / "agents.json"
 CONV_BASE = Path.home() / ".agentia" / "conversations"
+
+def _random_session_suffix(length: int = 8) -> str:
+    alphabet = string.ascii_lowercase + string.digits
+    return ''.join(random.choice(alphabet) for _ in range(length))
+
 
 def _slugify_message(message: str, max_len: int = 50) -> str:
     """Derive a slugified session name from a message.
@@ -1069,6 +1076,10 @@ def cmd_conv_use(conv_id: str, agent_name: str) -> int:
 # ─── Chat REPL (Phase 3) ───────────────────────────────────────────────────────
 
 _from_ptk_imported = False
+PromptSession = None
+FileHistory = None
+Style = None
+clear = None
 
 
 def cmd_chat(name: str, conv: str | None = None, new_conv: bool = False) -> int:
@@ -1080,13 +1091,17 @@ def cmd_chat(name: str, conv: str | None = None, new_conv: bool = False) -> int:
     - Slash commands: /switch, /new, /sessions, /compact, /status, /conv, /help, /quit
     - Ctrl+C to interrupt
     """
-    global _from_ptk_imported
+    global _from_ptk_imported, PromptSession, FileHistory, Style, clear
     if not _from_ptk_imported:
         try:
-            from prompt_toolkit import PromptSession
-            from prompt_toolkit.history import FileHistory
-            from prompt_toolkit.styles import Style
-            from prompt_toolkit.shortcuts import clear
+            from prompt_toolkit import PromptSession as _PromptSession
+            from prompt_toolkit.history import FileHistory as _FileHistory
+            from prompt_toolkit.styles import Style as _Style
+            from prompt_toolkit.shortcuts import clear as _clear
+            PromptSession = _PromptSession
+            FileHistory = _FileHistory
+            Style = _Style
+            clear = _clear
             _from_ptk_imported = True
         except ImportError:
             print("[agentia] prompt_toolkit not installed. Run: pip install prompt_toolkit")
@@ -1150,18 +1165,47 @@ def cmd_chat(name: str, conv: str | None = None, new_conv: bool = False) -> int:
         return f"\n  Agent: {current_agent_name}  |  Conv: {c}\n  > "
 
     def send_message(message: str):
-        """Send via smart router. Updates conversation state on success."""
+        """Send to the currently selected conversation/session."""
         nonlocal current_conv_id, current_session_name
-        response = _smart_route(name, message, None)
-        if not response:
-            print("[agentia] No response (agent may be unavailable).")
-            return False
+
+        if current_session_name:
+            response, is_409 = _http_post_or_409(
+                name,
+                f"/sessions/{current_session_name}/message",
+                {"content": message},
+                timeout=120,
+            )
+            if response is None and is_409 and current_conv_id:
+                # Session exists in host state but is not currently running; recreate/resume
+                session_info = _http_post(name, "/sessions/new", {"name": current_conv_id}, timeout=10)
+                if session_info:
+                    current_session_name = session_info.get("name", current_conv_id)
+                    response, _ = _http_post_or_409(
+                        name,
+                        f"/sessions/{current_session_name}/message",
+                        {"content": message},
+                        timeout=120,
+                    )
+            if response is None:
+                print("[agentia] No response (agent may be unavailable).")
+                return False
+        else:
+            response = _smart_route(name, message, current_conv_id)
+            if not response:
+                print("[agentia] No response (agent may be unavailable).")
+                return False
+            if current_conv_id:
+                active = _get_active_conv(name)
+                if active:
+                    current_session_name = active.get("session_name", current_session_name)
+
         resp_conv = response.get("conversation") or current_conv_id
         resp_count = response.get("message_count", 0)
         resp_ctx = response.get("context_pct", 0)
         if resp_conv and resp_conv != current_conv_id:
             current_conv_id = resp_conv
         if current_conv_id:
+            _set_active_conv(name, current_conv_id, current_session_name or current_conv_id)
             _upsert_conv_from_send(
                 name, current_conv_id,
                 current_session_name or current_conv_id,
@@ -1267,10 +1311,14 @@ def cmd_chat(name: str, conv: str | None = None, new_conv: bool = False) -> int:
                 continue
 
             if cmd == "/new":
-                if not arg1:
-                    print("[agentia] Usage: /new <title>")
-                    continue
-                slug = _slugify_message(arg1)
+                if arg1:
+                    slug = re.sub(r'[^a-zA-Z0-9\s_-]', '', arg1.strip().lower())
+                    slug = re.sub(r'\s+', '-', slug).strip('-')
+                    if not slug:
+                        print("[agentia] Usage: /new <title>")
+                        continue
+                else:
+                    slug = f"session-{_random_session_suffix(8)}"
                 si = _http_post(name, "/sessions/new", {"name": slug}, timeout=10)
                 if not si:
                     print(f"[agentia] Failed to create conversation '{slug}'.")

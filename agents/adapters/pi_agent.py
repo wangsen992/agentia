@@ -248,17 +248,17 @@ class SessionManager:
     def _build_pi_args(self, session: Session) -> list[str]:
         """Build the pi command-line args for a session.
 
-        pi-agent natural layout: ~/.pi/agent/sessions/<session-name>/session.jsonl
-        We mount host's ~/.agentia/agents/<name>/ to container's ~/.pi/agent/,
-        so sessions end up at host's ~/.agentia/agents/<name>/.pi/sessions/<name>/.
+        Each Agentia session is bound to an explicit pi session file so distinct
+        host/session-manager sessions map to distinct underlying pi histories.
         """
+        session_file = self._session_dir / f"{session.name}.jsonl"
         pi_args = [
             "pi",
             "--mode", "rpc",
             "--provider", self._provider,
             "--model", self._model,
             "--session-dir", str(self._session_dir),
-            "--continue",
+            "--session", str(session_file),
         ]
         agents_file = self._workspace / "AGENTS.md"
         if agents_file.exists():
@@ -269,8 +269,10 @@ class SessionManager:
 
     def _spawn(self, session: Session) -> Session:
         """Spawn a pi subprocess for a session."""
-        # Ensure session dir
-        (self._session_dir / session.name).mkdir(parents=True, exist_ok=True)
+        # Ensure session dir and pre-bind expected session file path
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+        if not session.session_file:
+            session.session_file = f"{session.name}.jsonl"
 
         pi_args = self._build_pi_args(session)
 
@@ -317,20 +319,11 @@ class SessionManager:
             # pi reports the actual path
             session.session_file = session._actual_session_file
         else:
-            # get_state timed out — find the actual session file ourselves.
-            # pi is the only writer, so the most recently modified .jsonl in the
-            # session dir is the one we just created or resumed.
-            session_files = sorted(
-                self._session_dir.glob("*.jsonl"),
-                key=lambda p: p.stat().st_mtime, reverse=True
-            )
-            # Filter out manifest.jsonl
-            session_files = [p for p in session_files if p.name != "manifest.jsonl"]
-            if session_files:
-                session.session_file = str(session_files[0])
-            else:
-                # Truly no file found — use name-based as last resort
-                session.session_file = f"{session.name}.jsonl"
+            # get_state timed out — keep the explicit session-file binding.
+            # We launched pi with --session <session.name>.jsonl, so falling back to
+            # "most recent file in the directory" would risk aliasing multiple logical
+            # sessions onto one underlying pi history.
+            session.session_file = session.session_file or f"{session.name}.jsonl"
 
         self._upsert_manifest(session)
         return session

@@ -146,6 +146,20 @@ class SessionManagerBehaviorTest(unittest.TestCase):
         self.assertTrue(result["hard"])
         self.assertFalse(session_dir.exists())
 
+    def test_build_pi_args_binds_session_to_explicit_file(self):
+        s1 = Session(name="2026-04-11T17-30-00_session-1", title="session-1")
+        s2 = Session(name="2026-04-11T17-31-00_session-2", title="session-2")
+        args1 = self.sm._build_pi_args(s1)
+        args2 = self.sm._build_pi_args(s2)
+        self.assertIn("--session", args1)
+        self.assertIn("--session", args2)
+        p1 = args1[args1.index("--session") + 1]
+        p2 = args2[args2.index("--session") + 1]
+        self.assertTrue(p1.endswith("2026-04-11T17-30-00_session-1.jsonl"))
+        self.assertTrue(p2.endswith("2026-04-11T17-31-00_session-2.jsonl"))
+        self.assertNotEqual(p1, p2)
+        self.assertNotIn("--continue", args1)
+
 
 if __name__ == "__main__":
     unittest.main()
