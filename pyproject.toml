@@ -30,11 +30,10 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 include = [
-  "agent_side*",
+  "agent_runtime*",
   "agents*",
   "cli*",
-  "relay*",
-  "examples*",
+    "examples*",
 ]
 exclude = [
   "tests*",

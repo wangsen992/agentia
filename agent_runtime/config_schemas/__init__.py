@@ -7,7 +7,7 @@ Each approach lives in its own file:
   approach_c_layered.py   — Layered config with base + env override merging
 
 Import example:
-  from agent_side.config_schemas.approach_b_pydantic import (
+  from agent_runtime.config_schemas.approach_b_pydantic import (
       AgentServerConfigPydantic,
       ConfigManagerPydantic,
   )

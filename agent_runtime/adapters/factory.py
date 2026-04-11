@@ -2,14 +2,14 @@
 Agent Adapter Factory
 
 Usage:
-    from agents.adapters.factory import get_adapter
+    from agent_runtime.adapters.factory import get_adapter
 
     adapter = get_adapter("pi-agent", workspace="/path/to/workspace", provider="minimax", model="MiniMax-M2.7")
     # or
     adapter = get_adapter()  # defaults to pi-agent
 
 To add a new adapter:
-    1. Create agents/adapters/<name>.py implementing AgentAdapter
+    1. Create agent_runtime/adapters/<name>.py implementing AgentAdapter
     2. Import it and add to ADAPTERS dict below
 """
 

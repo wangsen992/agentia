@@ -21,7 +21,7 @@ agentia/
 │       ├── docker.py    ← HTTP client to AgentServer (Docker)
 │       └── ssh.py       ← SSH+curl client to AgentServer (remote hosts)
 │
-├── agent_side/          ← Agent-side AgentServer
+├── agent_runtime/          ← Agent-side AgentServer
 │   ├── server.py        ← AgentServer HTTP server
 │   ├── config.py        ← ConfigManager for per-agent config
 │   ├── harness.py      ← Internal harness (manages delivery patterns)
@@ -50,7 +50,7 @@ agentia/
 
 ## Design Principles
 
-1. **HostContainerBackend is the transport interface** — DockerBackend and SSHBackend implement this interface, providing HTTP access to AgentServer instances.
+1. **Pure HTTP host/server architecture is canonical** — host CLI talks directly to AgentServer; legacy relay transport is removed.
 
 2. **AgentServer owns agent lifecycle** — Each agent container runs an AgentServer that manages the agent subprocess (via AgentAdapter) and exposes HTTP endpoints for messaging.
 
@@ -63,10 +63,7 @@ agentia/
 ## Removed Components
 
 The following were removed in the cleanup:
-- `relay/exec_relay.py` — Functionality merged into DockerBackend
-- `relay/inbox_relay.py` — Superseded by agent_side/patterns/inbox.py
-- `relay/websocket_relay.py` — Separate WebSocket hierarchy, not aligned
-- `relay/inbox.py` — Legacy file-based inbox, superseded by agent_side/patterns/inbox.py
+- Legacy relay transport was removed after the host/server/session architecture became the canonical path.
 - `harnesses/` (entire directory) — Deprecated; AgentServer is the replacement
 - `observability/` (entire directory) — Agent-side specific; will be re-added via AgentServer in future
 - `workspaces/` (entire directory) — Template mechanism not aligned with AgentServer

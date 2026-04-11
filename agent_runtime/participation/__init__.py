@@ -5,7 +5,7 @@ Exports the shared types and the three evaluator implementations.
 
 Usage::
 
-    from agent_side.participation import (
+    from agent_runtime.participation import (
         ParticipationLevel,
         RelayMessage,
         AgentContext,
@@ -19,7 +19,7 @@ Usage::
 
 Single import for the recommended factory::
 
-    from agent_side.participation import make_hybrid_evaluator
+    from agent_runtime.participation import make_hybrid_evaluator
 """
 
 from .types import (

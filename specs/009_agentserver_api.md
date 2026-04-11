@@ -2,7 +2,7 @@
 
 ## Goal
 
-Document the HTTP API exposed by AgentServer on the agent side. This is the contract between the host-side `HostContainerBackend` and the agent-side `AgentServer`.
+Document the HTTP API exposed by AgentServer on the agent side. This is the contract between the host CLI and the unified agent runtime.
 
 ---
 
@@ -151,7 +151,7 @@ Returns basic telemetry.
 
 ## Host Messaging Plane
 
-These endpoints are called by `HostContainerBackend` implementations (DockerBackend, SSHBackend).
+These endpoints are called by the host CLI over HTTP.
 
 ### POST /message
 
@@ -280,7 +280,7 @@ AgentServer config is stored at `~/.agentia/agent.json` and loaded at startup.
 This API is the "AgentServer" box in SPEC 005's architecture diagram:
 
 ```
-BaseRelay → HostContainerBackend → [HTTP] → AgentServer → AgentAdapter → Agent
+host CLI → [HTTP] → AgentServer → AgentAdapter → Agent
 ```
 
 AgentServer is agent-side, deployment-agnostic, and handles:

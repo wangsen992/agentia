@@ -9,8 +9,8 @@ import time
 import uuid
 from typing import Optional
 
-from agents.adapters import get_adapter
-from agents.adapters.base import AgentAdapter
+from agent_runtime.adapters import get_adapter
+from agent_runtime.adapters.base import AgentAdapter
 
 
 class SyncDelivery:

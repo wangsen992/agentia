@@ -60,7 +60,7 @@ def get_agent(runtime: str = "openclaw", **opts) -> AgentAdapter:
 1. **Future-proofing** — adding pi-agent or any other runtime is just a new adapter class, no relay changes
 2. **Testing** — can swap in a mock adapter for testing without spinning up containers
 3. **Benchmarking** — can test same relay behavior with different agent runtimes
-4. **Clarity** — the interface forces us to define what "an agent" actually is from relay's perspective
+4. **Clarity** — the interface forces us to define what "an agent" actually is from the runtime's perspective
 
 ## Backward Compatibility
 

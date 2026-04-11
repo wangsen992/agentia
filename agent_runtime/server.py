@@ -20,9 +20,9 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent_side.config import AgentServerConfig, ConfigManager, DEFAULT_CONFIG_PATH
-from agent_side.harness import Harness
-from agents.adapters.pi_agent import SessionManager
+from agent_runtime.config import AgentServerConfig, ConfigManager, DEFAULT_CONFIG_PATH
+from agent_runtime.harness import Harness
+from agent_runtime.adapters.pi_agent import SessionManager
 
 
 class AgentServer:

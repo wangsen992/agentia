@@ -39,8 +39,7 @@ RUN pip3 install requests jinja2 --break-system-packages
 
 # Agent source baked into /agent/ — never shadowed by /workspace mount
 COPY agents/ /agent/agents/
-COPY relay/ /agent/relay/
-COPY agent_side/ /agent/agent_side/
+COPY agent_runtime/ /agent/agent_runtime/
 COPY setup/ /agent/setup/
 COPY constants.py /agent/
 COPY cli/ /agent/cli/

@@ -83,7 +83,7 @@ What this does **not** fully cover yet:
 - some deeper runtime/lifecycle behavior inside the real pi subprocess path
 - one known architectural concern: `SessionManager.new_session()` reloads manifest state, which rehydrates sessions as `stopped` and may weaken live-state/LRU semantics unless manifest is treated as source of truth
 
-The older root-level relay/moderator tests are not sufficient validation for the current host/server/session architecture.
+The older moderator-era experiments are not sufficient validation for the current host/server/session architecture.
 
 ## Prerequisites
 
@@ -556,7 +556,7 @@ cli/
     agent.py         # Agent-side CLI: setup + serve (runs in container/on agent machine)
     host.py          # Host-side CLI: send, manage, files, chat (runs anywhere)
 
-agent_side/
+agent_runtime/
     server.py        # AgentServer HTTP API
     harness.py       # Spawns and manages agent subprocess
     config.py        # AgentServerConfig + ConfigManager
@@ -564,7 +564,7 @@ agent_side/
         inbox.py     # Inbox delivery pattern
         sync.py      # Sync delivery pattern
 
-agents/adapters/
+agent_runtime/adapters/
     pi_agent.py      # pi-agent adapter + SessionManager
     openclaw.py      # OpenClaw adapter (legacy)
     factory.py       # Adapter factory
@@ -592,7 +592,6 @@ tests/
     test_conversations_and_session_manager.py # conversation registry + session-manager semantics
     test_host_cli_more.py                 # update/forward/failure-path coverage
 
-relay/                              # Deprecated (legacy; not current validation target)
 ```
 
 ---

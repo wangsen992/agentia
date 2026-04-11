@@ -1,7 +1,7 @@
 # Session Management — Option A
 
 **Status:** Draft  
-**Owner:** AgentServer (agent_side/)
+**Owner:** AgentServer (agent_runtime/)
 
 ---
 

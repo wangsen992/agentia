@@ -1,16 +1,16 @@
 # Agent Adapters
 #
 # Base interface:
-#     from agents.adapters.base import AgentAdapter, AgentResponse
+#     from agent_runtime.adapters.base import AgentAdapter, AgentResponse
 #
 # Factory:
-#     from agents.adapters.factory import get_adapter, list_adapters
+#     from agent_runtime.adapters.factory import get_adapter, list_adapters
 #
 # pi-agent adapter (primary):
-#     from agents.adapters.pi_agent import PiAgentAdapter
+#     from agent_runtime.adapters.pi_agent import PiAgentAdapter
 #
 # OpenClaw adapter (legacy):
-#     from agents.adapters.openclaw import OpenClawAdapter
+#     from agent_runtime.adapters.openclaw import OpenClawAdapter
 
 from .base import AgentAdapter, AgentResponse
 from .factory import get_adapter, list_adapters

@@ -80,7 +80,7 @@ class ConversationResult:
 **Moderator + AgentServer integration test — end to end**
 
 Two agent containers + moderator + AgentServer, all talking to each other:
-1. Moderator uses DockerBackend to send prompts to each agent's AgentServer
+1. Moderator/orchestrator uses direct HTTP to each agent's AgentServer
 2. Each agent runs AgentServer (sync or inbox delivery mode)
 3. AgentServer receives message, calls OpenClaw via AgentAdapter, returns response
 4. Moderator collects responses, builds history, sends next prompt
@@ -111,7 +111,7 @@ Moderator
     ↓
 BaseRelay (unchanged interface to moderator)
     ↓
-HostContainerBackend (transport to agent side)
+Direct HTTP transport to agent side
     ↓
 AgentServer (HTTP/WebSocket, owns inbox pattern)
     ↓

@@ -242,7 +242,7 @@ agentia registry info                # show ~/.agentia/ structure
 
 3. **Registry is explicit** — everything is on disk in `~/.agentia/`, no hidden state.
 
-4. **Composable with relay/inbox** — the Moderator uses `InboxRelay` to send messages. The InboxRelay uses `agentia exec` under the hood, which goes through the adapter. So the moderator never knows or cares how the agent is actually running.
+4. **Composable with inbox patterns** — the Moderator uses `InboxRelay` to send messages. The InboxRelay uses `agentia exec` under the hood, which goes through the adapter. So the moderator never knows or cares how the agent is actually running.
 
 5. **Cloud-ready** — adding SSH support means agents can run on any machine you can SSH into, not just locally.
 
