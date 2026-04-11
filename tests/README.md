@@ -11,7 +11,10 @@ python3 -m unittest -v \
   tests/test_current_surface.py \
   tests/test_host_cli_e2e.py \
   tests/test_more_cli_and_api.py \
-  tests/test_agentserver_endpoints.py
+  tests/test_agentserver_endpoints.py \
+  tests/test_agentserver_endpoints_more.py \
+  tests/test_conversations_and_session_manager.py \
+  tests/test_host_cli_more.py
 ```
 
 ## Purpose
@@ -24,6 +27,9 @@ These tests target the current user-facing surface:
 - host CLI end-to-end flows against a lightweight fake AgentServer (`register`, `agents`, `status`, `configure`, `sessions`, `send`, `compact`, `session delete`, `files`)
 - coverage for `snapshot`, `clean`, and `prune`
 - direct API-level check for file path traversal protection in `AgentServerHandler._handle_files`
-- in-process AgentServer handler tests for `/status`, `/config`, `/sessions`, session messaging, deletion, and file PUT/GET flows
+- in-process AgentServer handler tests for `/status`, `/config`, `/metrics`, `/inbox`, `/message`, `/message/async`, `/response/<id>`, `/sessions`, session messaging, deletion, and file PUT/GET flows
+- positive-path conversation registry tests (`show`, `tag`, `rename`, `delete`, `use`, filtered `list`)
+- host CLI tests for `update`, `forward`, and selected failure paths
+- session-manager persisted-state semantics tests
 
 Legacy relay/moderator tests at repo root are not sufficient coverage for the current host/server/session architecture.

@@ -411,10 +411,11 @@ class AgentServerHandler(BaseHTTPRequestHandler):
         content = data.get("content", "")
         result = sm.send_message(name, content)
         if "error" in result:
-            if result.get("error", "").startswith("session not"):
-                self._send_json(404, result)
-            elif "not running" in result.get("error", ""):
+            error_text = result.get("error", "")
+            if "not running" in error_text:
                 self._send_json(409, result)
+            elif error_text.startswith("session not"):
+                self._send_json(404, result)
             else:
                 self._send_json(400, result)
         else:

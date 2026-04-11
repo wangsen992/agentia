@@ -1,107 +1,50 @@
-# Agentia — Next Steps
+# Agentia Hardening Plan — 2026-04-10
 
-**Last Updated:** 2026-04-08
+## Goal
+Identify remaining gaps in the current Agentia surface and add comprehensive tests so the implemented behavior is validated, documented, and trustworthy.
 
-## Completed: pi-agent as Primary Adapter
+## Current validated areas
+- host conversation command semantics
+- smart router active pointer bookkeeping
+- session deletion by resolved title
+- files PUT created-vs-updated semantics
+- host CLI E2E against fake AgentServer (`register`, `agents`, `status`, `configure`, `sessions`, `send`, `compact`, `session delete`, `files`)
+- host CLI coverage for `snapshot`, `clean`, `prune`
+- direct API safety check for file path traversal
+- in-process AgentServer handler tests for `/status`, `/config`, `/sessions`, session messaging, deletion, and file PUT/GET
 
-pi-agent is now Agentia's primary agent runtime. OpenClaw is legacy.
+## Remaining gap buckets
+1. AgentServer core endpoints not yet covered deeply
+   - broader async/inbox-oriented behavior beyond current handler-level coverage
+2. Host CLI gaps
+   - `update`
+   - `forward`
+   - more failure-path assertions
+   - possible `files edit` behavior (likely mock-based)
+3. Conversation management gaps
+   - `conv list/show/use/tag/delete` positive-path persistence and active pointer updates
+   - smart-router fallback behavior from stale `.active/`
+4. Session manager behavior gaps
+   - `new_session()` semantics
+   - `get_session()` title resolution
+   - hard delete behavior
+5. Documentation sync after each completed coverage increment
 
-### What was built
+## Execution order
+1. Expand AgentServer endpoint tests (highest value)
+2. Expand host CLI command coverage
+3. Expand conversation/session-manager behavioral tests
+4. Re-audit for uncovered public surface
+5. Update README/tests docs
+6. Commit cleanly
 
-| Component | Status |
-|-----------|--------|
-| `agents/adapters/pi_agent.py` | ✅ PiAgentAdapter (RPC subprocess, event reader, block-on-agent_end) |
-| `agents/adapters/factory.py` | ✅ pi-agent registered, default = "pi-agent" |
-| `setup/adapters/pi-agent/` | ✅ install.sh, config.tmpl, bootstrap/*.tmpl |
-| `setup/adapters/openclaw/` | ✅ install.sh, config.tmpl, bootstrap/*.tmpl |
-| `agentia install <adapter>` | ✅ Jinja2 template rendering + runtime install |
-| `agentia agentserver` | ✅ Starts AgentServer |
-| `agentia create --adapter --provider --model` | ✅ Full adapter config |
-| `agent_side/config.py` | ✅ adapter_type, provider, model, workspace, role, skills fields |
-| `agent_side/patterns/` | ✅ Pass adapter kwargs to get_adapter() |
-| `Dockerfile` | ✅ Generic base, ENTRYPOINT=agentia |
-| `setup/README.md` | ✅ How to add new adapter |
+## New findings during hardening
+- `AgentServerHandler._handle_session_message()` had an error-mapping bug: `"session not running"` was being classified as 404 due to condition ordering. Fixed.
+- `AgentServerHandler._handle_files()` had a real macOS path-resolution bug (`/var` vs `/private/var`) causing false path-traversal rejections. Fixed.
+- `SessionManager.new_session()` always reloads manifest, which clears in-memory runtime state and rehydrates entries as stopped. This weakens no-op/LRU semantics unless manifest is the full source of truth. Not fixed yet; keep flagged as architectural follow-up.
 
-### Architecture
-
-```
-agentia install pi-agent --config /etc/agentia/agent.json
-  → Render config.tmpl (Jinja2) → /etc/agentia/agent.json
-  → Render bootstrap/*.tmpl → /workspace/AGENTS.md, SYSTEM.md
-  → Run setup/adapters/pi-agent/install.sh (npm install)
-
-agentia agentserver
-  → Start AgentServer (reads /etc/agentia/agent.json)
-
-AgentServer
-  → Harness → InboxDelivery/SyncDelivery
-  → get_adapter(provider, model, workspace) → PiAgentAdapter
-  → pi --mode rpc subprocess → JSONL stdin/stdout
-```
-
----
-
-## What's Left
-
-### HIGH PRIORITY
-
-#### 1. AgentServer reads adapter config from /etc/agentia/agent.json ✅ DONE
-AgentServer reads `AGENTIA_CONFIG` env var (default `/etc/agentia/agent.json`) and uses adapter fields (adapter_type, adapter_provider, adapter_model, adapter_workspace) at startup. Verified working:
-```
-[AgentServer] Config: default | adapter=pi-agent provider=minimax model=MiniMax-M2.7
-[Harness] Started with inbox delivery for agent-001
-```
-
-#### 2. Participation Evaluator wiring
-HybridEvaluator exists in `agent_side/participation/` but is not wired into AgentServer message handler. Route: `server.py _handle_message()` → evaluator.evaluate() → skip/observer/active decision.
-
-#### 3. SSH deployment
-`agentia install` should work on SSH targets:
-```bash
-agentia install pi-agent --host user@server --config /etc/agentia/agent.json
-```
-- Copy setup scripts to remote
-- Run install.sh via SSH
-- AgentServer runs natively (no Docker)
-
-### MEDIUM PRIORITY
-
-#### 4. Multi-Agent Coordination
-Agent-to-agent messaging via AgentServer relay. Session sharing / delegation protocol.
-
-#### 5. Channel Integration (borrowed from OpenClaw)
-Discord, Telegram, etc. via channel-to-agent routing.
-
-#### 6. Skills System
-pi-agent skills follow Agent Skills standard. Define Agentia's skill interface and per-agent skill loading.
-
-### DEFERRED / FUTURE
-
-- **Auth** — token auth for AgentServer API
-- **Federation across machines** — session abstraction needed
-- **Pydantic config migration** — Phase 2, after schema validated
-- **Observability** — see issue #15
-
----
-
-## Key Reference
-
-### pi-agent RPC Protocol
-- stdin/stdout JSONL
-- Key commands: `prompt`, `steer`, `follow_up`, `abort`, `new_session`, `get_state`, `get_messages`, `compact`, `bash`
-- Sessions: JSONL in `~/.pi/agent/sessions/`
-- Bootstrap: `AGENTS.md` + `SYSTEM.md` per workspace (we write, pi-agent reads at startup)
-
-### agentia CLI
-```bash
-agentia install pi-agent --config /etc/agentia/agent.json --provider minimax --model MiniMax-M2.7
-agentia agentserver
-agentia create my-image my-agent --adapter pi-agent --provider minimax --model MiniMax-M2.7
-agentia send my-agent "Hello"
-```
-
-### Adding New Adapter
-1. Create `setup/adapters/<name>/install.sh`
-2. Create `setup/adapters/<name>/config.tmpl`
-3. Create `setup/adapters/<name>/bootstrap/*.tmpl`
-4. `agentia install <name>` works automatically
+CHECKPOINT_FIELDS = {
+  status: "in_progress",
+  output_summary: "Expanded AgentServer handler coverage, fixed two real server bugs, and identified a remaining SessionManager manifest/runtime-state design gap.",
+  next_trigger: "Finish conversation/session-manager positive-path tests, then re-audit remaining host CLI gaps and sync docs."
+}
