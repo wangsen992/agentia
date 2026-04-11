@@ -127,18 +127,12 @@ python3 -m unittest -v \
   tests/test_conversations_and_session_manager.py \
   tests/test_host_cli_more.py
 
-docker build -t agentia .
-mkdir -p ~/.agentia/agents/my-agent
-
-docker run -d --name my-agent -p 18080:8080 \
-  -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
-  -v ~/.agentia/agents/my-agent:/workspace \
-  agentia-agent serve \
-    --install pi-agent \
-    --config /workspace/agent.json \
-    --provider minimax \
-    --model MiniMax-M2.7 \
-    --workspace /workspace
+export MINIMAX_API_KEY=your_key_here
+sh setup/setup-docker.sh \
+  --name my-agent \
+  --provider minimax \
+  --model MiniMax-M2.7 \
+  --host-port 18080
 
 python3 cli/host.py register http://localhost:18080 --name my-agent
 python3 cli/host.py status my-agent
@@ -147,28 +141,45 @@ python3 cli/host.py send my-agent "What can you do?"
 
 If those commands work, the current host/server/session path is basically alive.
 
-### 1. Build the image
+### 1. Start an agent container with the helper script
 
 ```bash
 cd agentia
+export MINIMAX_API_KEY=your_key_here
+sh setup/setup-docker.sh \
+  --name my-agent \
+  --provider minimax \
+  --model MiniMax-M2.7 \
+  --host-port 18080
+```
+
+By default this script:
+- builds the `agentia` Docker image
+- creates `~/.agentia/agents/<name>` if needed
+- starts a container named after the agent
+- mounts that host folder at `/workspace`
+- runs `agentia-agent serve --install pi-agent ...`
+
+Useful flags:
+- `--skip-build` — reuse an existing image
+- `--rebuild` — force a no-cache image rebuild
+- `--force-replace` — remove an existing container with the same name first
+- `--foreground` — run attached instead of detached
+- `--role-goal <text>`
+- `--backstory <text>`
+
+### 2. Manual Docker equivalent
+
+If you want the raw Docker commands instead of the helper script:
+
+```bash
 docker build -t agentia .
-```
-
-### 2. Start an agent container
-
-First create a clean local home for the agent:
-
-```bash
 mkdir -p ~/.agentia/agents/my-agent
-```
 
-Then start the container:
-
-```bash
 docker run -d --name my-agent -p 18080:8080 \
     -e MINIMAX_API_KEY=$MINIMAX_API_KEY \
     -v ~/.agentia/agents/my-agent:/workspace \
-    agentia-agent serve \
+    agentia serve \
       --install pi-agent \
       --config /workspace/agent.json \
       --provider minimax \
@@ -176,8 +187,7 @@ docker run -d --name my-agent -p 18080:8080 \
       --workspace /workspace
 ```
 
-> The image entrypoint is `agentia-agent`, so the command above is the direct container command.
->
+> The Docker image entrypoint is `agentia-agent`, so the command above only needs the subcommand and its flags.
 > All agent state — config, bootstrap files, sessions, and workspace files — lives under `~/.agentia/agents/<name>/` on the host via the `/workspace` bind mount. The container is intended to be stateless.
 >
 > If port `18080` is already in use, pick another one like `18082` and use that same port in the `register` command below.
