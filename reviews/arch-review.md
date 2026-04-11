@@ -88,10 +88,10 @@ cli/agent.py, cli/host.py, agent_side/, agents/adapters/, setup/adapters/, specs
 - `relay/` — host-side relay library (backends/docker.py, backends/ssh.py) — legacy
 - `containers/` — container management scripts
 - `research/` — research files
-- `review/` — review outputs
+- `reviews/review-2026-04-10/` — review outputs
 - `examples/` — example configs
-- `SPEC-007-memory-test.md`, `NEXT.md`, `NEXT-STEPS.md` — project notes
-- `constants.py`, `test_imports.py`, `test_moderator_e2e.py`
+- `specs/007_memory_test.md`, `NEXT.md`, `NEXT-STEPS.md` — project notes
+- `constants.py`, `dev/test_imports.py`, `dev/test_moderator_e2e.py`
 - `agentia-agent` — root shell wrapper script
 
 **Verdict:** The README accurately describes the **core** project layout. The extra dirs are workspace artifacts not part of the core system. Not a documentation bug — just incomplete.

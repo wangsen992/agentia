@@ -3,7 +3,7 @@
 Moderator E2E Test — Two containers talking via DockerBackend.
 
 Run from the agentia project root:
-    python3 test_moderator_e2e.py
+    python3 dev/test_moderator_e2e.py
 
 Prerequisites:
     - analyst-001 and critic-001 containers running with AgentServer

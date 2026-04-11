@@ -3,11 +3,12 @@
 *.md
 !setup/adapters/openclaw/*.md
 !setup/adapters/pi-agent/bootstrap/*.md
-review/
+reviews/
 research/
 specs/
 containers/
 examples/
+dev/
 .DS_Store
 *.pyc
 __pycache__/

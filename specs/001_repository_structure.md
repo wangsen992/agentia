@@ -43,8 +43,9 @@ agentia/
 │   └── config-sanitized/  ← Isolated OpenClaw config (no API keys)
 │
 ├── specs/               ← Design decisions with rationale
-├── logs/                ← Runtime logs (gitignored)
-└── test_imports.py      ← Import validation
+├── tests/               ← Automated regression tests
+├── dev/                 ← Manual/dev validation scripts
+└── logs/                ← Runtime logs (gitignored)
 ```
 
 ## Design Principles
@@ -56,6 +57,8 @@ agentia/
 3. **Moderator is an example** — Multi-agent orchestration is demonstrated via `examples/moderator.py`, not built into the core relay layer.
 
 4. **No legacy harnesses** — The old `harnesses/` directory (gateway_harness, interactive_harness, multi_turn_harness, single_harness) was removed. AgentServer replaces all of these.
+
+5. **Automated tests vs manual scripts are separated** — proper regression tests live under `tests/`; one-off developer scripts live under `dev/`.
 
 ## Removed Components
 

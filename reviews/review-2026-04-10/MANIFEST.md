@@ -17,11 +17,11 @@ Spawn 5 subagents, one per focus area. Each should:
 
 ## Output Files
 
-- `agentia/review/subagent-01-core.md`
-- `agentia/review/subagent-02-adapters.md`
-- `agentia/review/subagent-03-delivery.md`
-- `agentia/review/subagent-04-cli.md`
-- `agentia/review/subagent-05-setup.md`
+- `agentia/reviews/review-2026-04-10/subagent-01-core.md`
+- `agentia/reviews/review-2026-04-10/subagent-02-adapters.md`
+- `agentia/reviews/review-2026-04-10/subagent-03-delivery.md`
+- `agentia/reviews/review-2026-04-10/subagent-04-cli.md`
+- `agentia/reviews/review-2026-04-10/subagent-05-setup.md`
 
 ## Review Criteria (each subagent should assess)
 
@@ -34,4 +34,4 @@ For each area, assess:
 
 ## Synthesis
 
-After all 5 complete, I will synthesize into `agentia/review/FINAL-REVIEW.md`.
+After all 5 complete, I will synthesize into `agentia/reviews/review-2026-04-10/FINAL-REVIEW.md`.

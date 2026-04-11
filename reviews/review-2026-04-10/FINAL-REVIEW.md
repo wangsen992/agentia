@@ -3,7 +3,7 @@
 **Date:** 2026-04-08  
 **Reviewers:** 5 parallel subagents covering Core, Adapters, Delivery, CLI/Relay, Setup  
 **Files Reviewed:** ~25 across the full codebase  
-**Output:** `review/subagent-0X-<area>.md` (individual reports) + this synthesis
+**Output:** `reviews/review-2026-04-10/subagent-0X-<area>.md` (individual reports) + this synthesis
 
 ---
 

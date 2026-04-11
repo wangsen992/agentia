@@ -97,13 +97,13 @@ These exist in the project but aren't in the README layout. None are core:
 - `relay/` — legacy host-side relay (backends/docker.py, ssh.py)
 - `containers/` — container management utilities
 - `examples/` — example configs
-- `review/` — review output files (this directory)
+- `reviews/review-2026-04-10/` — review output files (this directory)
 - `research/` — research files
-- `test_imports.py`, `test_moderator_e2e.py` — test files
+- `dev/test_imports.py`, `dev/test_moderator_e2e.py` — test files
 - `agentia-agent` — root shell wrapper
 - `constants.py` — constants
 - `NEXT.md`, `NEXT-STEPS.md` — project notes
-- `SPEC-007-memory-test.md` — one-off spec doc
+- `specs/007_memory_test.md` — one-off spec doc
 
 **None of these are documentation bugs** — they're just outside the scope of the README.
 
