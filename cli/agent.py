@@ -19,7 +19,9 @@ from pathlib import Path
 #
 # New design: host ~/.agentia/agents/<name>/ mounted to container ~/.pi/agent/
 # PI_DIR is set via environment variable.
-DEFAULT_CONFIG_PATH = Path.home() / ".agentia" / "agents"  # parent; agent name appended at runtime
+DEFAULT_CONFIG_PATH = (
+    Path.home() / ".agentia" / "agents"
+)  # parent; agent name appended at runtime
 DEFAULT_WORKSPACE = Path.home() / ".pi" / "agent"
 
 
@@ -122,16 +124,22 @@ def cmd_serve(
 
     print(f"[agentia-agent] Starting AgentServer with config: {config_path}")
     cmd = [
-        "python3", "/agent/agent_side/server.py",
-        "--config", str(config_path),
-        "--session-ttl", str(session_ttl),
-        "--max-sessions", str(max_sessions),
-        "--context-threshold", str(context_threshold),
+        "python3",
+        "/agent/agent_runtime/server.py",
+        "--config",
+        str(config_path),
+        "--session-ttl",
+        str(session_ttl),
+        "--max-sessions",
+        str(max_sessions),
+        "--context-threshold",
+        str(context_threshold),
     ]
     os.execvp("python3", cmd)
 
 
 # ─── Template rendering (shared) ───────────────────────────────────────────────
+
 
 def _render_templates(
     adapter: str,
@@ -150,7 +158,9 @@ def _render_templates(
     if not adapter_dir.exists():
         raise ValueError(f"Unknown adapter: {adapter}")
 
-    env = Environment(loader=FileSystemLoader(str(adapter_dir)), keep_trailing_newline=True)
+    env = Environment(
+        loader=FileSystemLoader(str(adapter_dir)), keep_trailing_newline=True
+    )
     env.globals["env"] = os.environ
 
     config_output.parent.mkdir(parents=True, exist_ok=True)
@@ -203,6 +213,7 @@ def _build_context(
 
 # ─── CLI ───────────────────────────────────────────────────────────────────────
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="agentia-agent",
@@ -212,43 +223,82 @@ def main() -> int:
 
     # agentia-agent setup <adapter>
     p_setup = sub.add_parser("setup", help="Render bootstrap files + install runtime")
-    p_setup.add_argument("adapter", choices=["pi-agent", "openclaw"],
-                         help="Agent runtime adapter")
-    p_setup.add_argument("--config", default=str(DEFAULT_CONFIG_PATH),
-                         help=f"Config output path (default: {DEFAULT_CONFIG_PATH})")
+    p_setup.add_argument(
+        "adapter", choices=["pi-agent", "openclaw"], help="Agent runtime adapter"
+    )
+    p_setup.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help=f"Config output path (default: {DEFAULT_CONFIG_PATH})",
+    )
     p_setup.add_argument("--agent-id", default="agent-001", help="Agent ID")
     p_setup.add_argument("--provider", default="minimax", help="LLM provider")
     p_setup.add_argument("--model", default="MiniMax-M2.7", help="Model name")
-    p_setup.add_argument("--workspace", default=str(DEFAULT_WORKSPACE),
-                         help=f"Agent workspace path (default: {DEFAULT_WORKSPACE})")
+    p_setup.add_argument(
+        "--workspace",
+        default=str(DEFAULT_WORKSPACE),
+        help=f"Agent workspace path (default: {DEFAULT_WORKSPACE})",
+    )
     p_setup.add_argument("--role-goal", default="", help="Agent role goal")
     p_setup.add_argument("--backstory", default="", help="Agent backstory")
     p_setup.add_argument("--skills", action="append", default=[], help="Skill name")
-    p_setup.add_argument("--var", action="append", default=[], dest="vars",
-                         help="key=value template variable override")
+    p_setup.add_argument(
+        "--var",
+        action="append",
+        default=[],
+        dest="vars",
+        help="key=value template variable override",
+    )
 
     # agentia-agent serve
     p_serve = sub.add_parser("serve", help="Start AgentServer HTTP API")
-    p_serve.add_argument("--install", choices=["pi-agent", "openclaw"], default=None,
-                         help="Run setup first before serving")
-    p_serve.add_argument("--config", default=str(DEFAULT_CONFIG_PATH),
-                         help=f"Config path (default: {DEFAULT_CONFIG_PATH})")
+    p_serve.add_argument(
+        "--install",
+        choices=["pi-agent", "openclaw"],
+        default=None,
+        help="Run setup first before serving",
+    )
+    p_serve.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help=f"Config path (default: {DEFAULT_CONFIG_PATH})",
+    )
     p_serve.add_argument("--agent-id", default="agent-001", help="Agent ID")
     p_serve.add_argument("--provider", default="minimax", help="LLM provider")
     p_serve.add_argument("--model", default="MiniMax-M2.7", help="Model name")
-    p_serve.add_argument("--workspace", default=str(DEFAULT_WORKSPACE),
-                         help=f"Agent workspace path (default: {DEFAULT_WORKSPACE})")
+    p_serve.add_argument(
+        "--workspace",
+        default=str(DEFAULT_WORKSPACE),
+        help=f"Agent workspace path (default: {DEFAULT_WORKSPACE})",
+    )
     p_serve.add_argument("--role-goal", default="", help="Agent role goal")
     p_serve.add_argument("--backstory", default="", help="Agent backstory")
     p_serve.add_argument("--skills", action="append", default=[], help="Skill name")
-    p_serve.add_argument("--var", action="append", default=[], dest="vars",
-                         help="key=value template variable override")
-    p_serve.add_argument("--session-ttl", type=int, default=1800,
-                         help="Session idle TTL in seconds (default: 1800)")
-    p_serve.add_argument("--max-sessions", type=int, default=10,
-                         help="Max concurrent running sessions (default: 10)")
-    p_serve.add_argument("--context-threshold", type=int, default=75,
-                         help="Context %% threshold for auto-compact (default: 75)")
+    p_serve.add_argument(
+        "--var",
+        action="append",
+        default=[],
+        dest="vars",
+        help="key=value template variable override",
+    )
+    p_serve.add_argument(
+        "--session-ttl",
+        type=int,
+        default=1800,
+        help="Session idle TTL in seconds (default: 1800)",
+    )
+    p_serve.add_argument(
+        "--max-sessions",
+        type=int,
+        default=10,
+        help="Max concurrent running sessions (default: 10)",
+    )
+    p_serve.add_argument(
+        "--context-threshold",
+        type=int,
+        default=75,
+        help="Context %% threshold for auto-compact (default: 75)",
+    )
 
     args = parser.parse_args()
 
